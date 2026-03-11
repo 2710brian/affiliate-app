@@ -25,9 +25,9 @@ db_engine = get_engine()
 def load_data():
     if db_engine:
         try:
-            # Vi indlæser alt og sikrer at dato-formater bevares som tekst/dato
             df = pd.read_sql("SELECT * FROM merchants", db_engine)
-            return df.fillna("")
+            # FIX: Vi konverterer alle kolonner til tekst for at undgå 'Dato-fejlen'
+            return df.astype(str).replace("None", "").replace("nan", "")
         except Exception:
             return pd.DataFrame()
     return pd.DataFrame()
@@ -35,13 +35,14 @@ def load_data():
 def save_data(df):
     if db_engine:
         try:
-            # Sørg for at links er korrekt formateret før gem
+            # Auto-link logik
             for col in ['Merchant', 'Programnavn', 'Website']:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: f"https://www.{str(x).lower().strip().replace(' ', '')}.dk" 
-                                            if isinstance(x, str) and '.' not in x and len(x) > 2 else x)
+                                            if isinstance(x, str) and len(x) > 2 and '.' not in x and not x.startswith('http') else x)
             
-            df.to_sql('merchants', db_engine, if_exists='replace', index=False)
+            # Gem som tekst i databasen for at bevare formatering
+            df.astype(str).to_sql('merchants', db_engine, if_exists='replace', index=False)
             return True
         except Exception as e:
             st.error(f"Fejl ved gem: {e}")
@@ -88,7 +89,8 @@ with st.sidebar:
     if uploaded_file:
         file_ext = uploaded_file.name.split('.')[-1]
         new_data = pd.read_csv(uploaded_file) if file_ext == 'csv' else pd.read_excel(uploaded_file)
-        new_data = new_data.fillna("")
+        # Konverter ny data til tekst med det samme
+        new_data = new_data.astype(str).replace("nan", "").replace("None", "")
         
         if st.button("Flet & Opdater CRM", use_container_width=True):
             potential_names = ['Merchant', 'Programnavn', 'Annoncør']
@@ -101,16 +103,14 @@ with st.sidebar:
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
-                    st.session_state.df['MATCH_KEY'] = st.session_state.df[next((c for c in potential_names if c in st.session_state.df.columns), name_col)].apply(clean_name)
-                    # Vi merger så vi ikke mister eksisterende kolonner (som Dato eller Noter)
+                    # Sikr MATCH_KEY på eksisterende data
+                    if 'MATCH_KEY' not in st.session_state.df.columns:
+                        st.session_state.df['MATCH_KEY'] = st.session_state.df[next((c for c in potential_names if c in st.session_state.df.columns), name_col)].apply(clean_name)
+                    
                     st.session_state.df = st.session_state.df.set_index('MATCH_KEY').combine_first(new_data.set_index('MATCH_KEY')).reset_index()
                 
                 save_data(st.session_state.df)
                 st.rerun()
-
-    st.markdown("---")
-    if not st.session_state.df.empty:
-        st.download_button("📥 Eksport Master", st.session_state.df.to_csv(index=False), "crm_master.csv", use_container_width=True)
 
 # --- CRM HOVEDTABEL ---
 if not st.session_state.df.empty:
@@ -121,30 +121,26 @@ if not st.session_state.df.empty:
         mask = df_to_show.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_to_show = df_to_show[mask]
 
-    # Konfiguration af den avancerede tabel
+    # Kolonne konfiguration
     column_config = {
         "Land": st.column_config.TextColumn("Land", width="small", pinned=True),
         "Merchant": st.column_config.LinkColumn("Website", pinned=True),
         "Programnavn": st.column_config.LinkColumn("Website"),
-        "MATCH_KEY": None, # Skjul
-        "Dato": st.column_config.TextColumn("Dato", width="medium"), # Sikrer dato vises
-        "Kontaktet": st.column_config.TextColumn("Kontaktet", width="medium")
+        "MATCH_KEY": None 
     }
 
     st.write(f"Antal annoncører: **{len(df_to_show)}**")
 
-    # EDITERBAR TABEL MED FAST TOP OG SORTERING
-    # 'pinned=True' i column_config gør at navnene bliver stående mens du scroller til højre
+    # TABEL MED FAST TOP OG SORTERING
     edited_df = st.data_editor(
         df_to_show,
         column_config=column_config,
         use_container_width=True,
         num_rows="dynamic",
-        height=800, # Fast højde fryser overskrifterne
-        key="crm_editor_pro"
+        height=800,
+        key="crm_editor_pro_v2"
     )
 
-    # Gem ændringer i session baggrunden
     if not edited_df.equals(df_to_show):
         st.session_state.df.update(edited_df)
 else:
