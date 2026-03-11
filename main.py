@@ -6,38 +6,36 @@ import sqlalchemy
 from sqlalchemy import create_engine, text
 
 # --- KONFIGURATION ---
-st.set_page_config(page_title="Affiliate CRM", layout="wide")
+st.set_page_config(page_title="Affiliate CRM Pro", layout="wide")
 
-# --- DATABASE-FORBINDELSE ---
+# --- DATABASE FORBINDELSE ---
 def get_engine():
     db_url = os.getenv("DATABASE_URL")
     if db_url:
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
         try:
-            engine = create_engine(db_url, pool_pre_ping=True)
-            return engine
+            return create_engine(db_url, pool_pre_ping=True)
         except Exception:
             return None
     return None
 
 db_engine = get_engine()
 
-# Hent data fra Railway Database
 def load_data():
     if db_engine:
         try:
+            # Vi indlæser alt og sikrer at dato-formater bevares som tekst/dato
             df = pd.read_sql("SELECT * FROM merchants", db_engine)
             return df.fillna("")
         except Exception:
             return pd.DataFrame()
     return pd.DataFrame()
 
-# Gem data til Railway Database
 def save_data(df):
     if db_engine:
         try:
-            # Auto-link logik: Gør navne klikbare
+            # Sørg for at links er korrekt formateret før gem
             for col in ['Merchant', 'Programnavn', 'Website']:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: f"https://www.{str(x).lower().strip().replace(' ', '')}.dk" 
@@ -49,7 +47,7 @@ def save_data(df):
             st.error(f"Fejl ved gem: {e}")
     return False
 
-# Indlæs data ved start
+# --- SESSION STATE ---
 if 'df' not in st.session_state or st.session_state.df.empty:
     st.session_state.df = load_data()
 
@@ -67,12 +65,11 @@ def clean_name(name):
     name = re.sub(r'\.dk|\.se|\.no|\.com|aps|a/s|as|dk|se|no', '', name)
     return re.sub(r'[^a-z0-9]', '', name).strip()
 
-# --- UI START ---
-st.title("💼 Affiliate CRM & Lead Database")
+st.title("💼 Affiliate CRM Pro")
 
-# --- SIDEPANEL (CRM KONTROL) ---
+# --- SIDEPANEL ---
 with st.sidebar:
-    st.header("🏆 CRM Kontrol")
+    st.header("🏆 Kontrolpanel")
     if db_engine:
         st.success("✅ Database Online")
     else:
@@ -81,11 +78,11 @@ with st.sidebar:
     if not st.session_state.df.empty:
         if st.button("💾 GEM ALLE RETTELSER", type="primary", use_container_width=True):
             if save_data(st.session_state.df):
-                st.success("Gemt permanent!")
+                st.success("Alt er gemt!")
                 st.rerun()
 
     st.markdown("---")
-    st.header("📥 Import / Opdater")
+    st.header("📥 Import / Sync")
     uploaded_file = st.file_uploader("Upload Excel/CSV", type=['csv', 'xlsx'])
     
     if uploaded_file:
@@ -93,7 +90,7 @@ with st.sidebar:
         new_data = pd.read_csv(uploaded_file) if file_ext == 'csv' else pd.read_excel(uploaded_file)
         new_data = new_data.fillna("")
         
-        if st.button("Flet & Gem", use_container_width=True):
+        if st.button("Flet & Opdater CRM", use_container_width=True):
             potential_names = ['Merchant', 'Programnavn', 'Annoncør']
             name_col = next((c for c in potential_names if c in new_data.columns), None)
             
@@ -105,6 +102,7 @@ with st.sidebar:
                     st.session_state.df = new_data
                 else:
                     st.session_state.df['MATCH_KEY'] = st.session_state.df[next((c for c in potential_names if c in st.session_state.df.columns), name_col)].apply(clean_name)
+                    # Vi merger så vi ikke mister eksisterende kolonner (som Dato eller Noter)
                     st.session_state.df = st.session_state.df.set_index('MATCH_KEY').combine_first(new_data.set_index('MATCH_KEY')).reset_index()
                 
                 save_data(st.session_state.df)
@@ -112,39 +110,42 @@ with st.sidebar:
 
     st.markdown("---")
     if not st.session_state.df.empty:
-        st.download_button("📥 Master Export (CSV)", st.session_state.df.to_csv(index=False), "master.csv", use_container_width=True)
+        st.download_button("📥 Eksport Master", st.session_state.df.to_csv(index=False), "crm_master.csv", use_container_width=True)
 
-# --- CRM TABEL ---
+# --- CRM HOVEDTABEL ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg efter annoncør, land, mail eller noter...", "")
+    search = st.text_input("🔍 Søg i alt (navn, dato, land, kategori...)", "")
     
-    df_to_show = st.session_state.df
+    df_to_show = st.session_state.df.copy()
     if search:
         mask = df_to_show.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_to_show = df_to_show[mask]
 
-    # Konfiguration (Links, Flag, Sortering)
+    # Konfiguration af den avancerede tabel
     column_config = {
-        "Land": st.column_config.TextColumn("Land", width="small"),
-        "Merchant": st.column_config.LinkColumn("Website"),
+        "Land": st.column_config.TextColumn("Land", width="small", pinned=True),
+        "Merchant": st.column_config.LinkColumn("Website", pinned=True),
         "Programnavn": st.column_config.LinkColumn("Website"),
-        "MATCH_KEY": None 
+        "MATCH_KEY": None, # Skjul
+        "Dato": st.column_config.TextColumn("Dato", width="medium"), # Sikrer dato vises
+        "Kontaktet": st.column_config.TextColumn("Kontaktet", width="medium")
     }
 
-    st.write(f"Viser **{len(df_to_show)}** annoncører")
+    st.write(f"Antal annoncører: **{len(df_to_show)}**")
 
-    # Den editerbare Excel-tabel
+    # EDITERBAR TABEL MED FAST TOP OG SORTERING
+    # 'pinned=True' i column_config gør at navnene bliver stående mens du scroller til højre
     edited_df = st.data_editor(
         df_to_show,
         column_config=column_config,
         use_container_width=True,
         num_rows="dynamic",
-        height=750,
-        key="crm_table"
+        height=800, # Fast højde fryser overskrifterne
+        key="crm_editor_pro"
     )
 
-    # Synkroniser ændringer løbende til session
+    # Gem ændringer i session baggrunden
     if not edited_df.equals(df_to_show):
         st.session_state.df.update(edited_df)
 else:
-    st.info("👋 Upload din liste for at starte dit CRM.")
+    st.info("👋 Upload din database for at aktivere CRM.")
