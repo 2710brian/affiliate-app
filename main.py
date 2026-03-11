@@ -1,13 +1,25 @@
 import streamlit as st
 import pandas as pd
 import re
+import os
 
 st.set_page_config(page_title="Affiliate Lead Maskine", layout="wide")
 
-if 'df' not in st.session_state:
-    st.session_state.df = pd.DataFrame()
+# --- DATA-LAGRING (Hukommelse) ---
+DB_FILE = "master_database.csv"
 
-# Hjælpefunktion til at rense navne (fjerner .dk, ApS, landekoder osv.)
+def load_data():
+    if os.path.exists(DB_FILE):
+        return pd.read_csv(DB_FILE)
+    return pd.DataFrame()
+
+def save_data(df):
+    df.to_csv(DB_FILE, index=False)
+
+if 'df' not in st.session_state:
+    st.session_state.df = load_data()
+
+# Hjælpefunktion til at rense navne
 def clean_name(name):
     if pd.isna(name): return ""
     name = str(name).lower()
@@ -16,71 +28,96 @@ def clean_name(name):
 
 st.title("🚀 Affiliate Lead Maskine")
 
-# --- MENU ---
+# --- SIDEPANEL: IMPORT & INDSTILLINGER ---
 with st.sidebar:
+    st.header("Indstillinger")
+    
+    # 1. VISNING ANTAL
+    items_per_page = st.selectbox("Annoncører pr. side", [25, 50, 100], index=0)
+    
+    st.markdown("---")
     st.header("Importer Data")
-    uploaded_file = st.file_uploader("Upload CSV eller Excel", type=['csv', 'xlsx'])
+    uploaded_file = st.file_uploader("Upload fil", type=['csv', 'xlsx'])
     
     if uploaded_file is not None:
         file_ext = uploaded_file.name.split('.')[-1]
         new_data = pd.read_csv(uploaded_file) if file_ext == 'csv' else pd.read_excel(uploaded_file)
-            
+        
         if st.button("Opdater & Samkør"):
-            # Identificer kolonner i den nye fil
-            cols = new_data.columns
-            name_col = next((c for c in ['Merchant', 'Programnavn', 'Annoncør'] if c in cols), None)
-            mail_col = next((c for c in ['Mail', 'Email', 'E-mail'] if c in cols), None)
-            mid_col = next((c for c in ['MID', 'Merchant ID'] if c in cols), None)
-
-            if not name_col:
-                st.error("Kunne ikke finde en navne-kolonne.")
-            else:
-                # Opret en unik 'MATCH_KEY' baseret på hvad vi har
-                # Vi kombinerer rensede navne og emails for at skabe et sikkert match
+            name_col = next((c for c in ['Merchant', 'Programnavn', 'Annoncør'] if c in new_data.columns), None)
+            if name_col:
                 new_data['MATCH_KEY'] = new_data[name_col].apply(clean_name)
-                if mail_col:
-                    new_data['MATCH_KEY'] = new_data['MATCH_KEY'] + new_data[mail_col].fillna('').str.lower().str.strip()
-
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
-                    # Gør det samme for eksisterende data
-                    ex_cols = st.session_state.df.columns
-                    ex_name_col = next((c for c in ['Merchant', 'Programnavn', 'Annoncør'] if c in ex_cols), None)
-                    ex_mail_col = next((c for c in ['Mail', 'Email', 'E-mail'] if c in ex_cols), None)
-                    
-                    st.session_state.df['MATCH_KEY'] = st.session_state.df[ex_name_col].apply(clean_name)
-                    if ex_mail_col:
-                        st.session_state.df['MATCH_KEY'] = st.session_state.df['MATCH_KEY'] + st.session_state.df[ex_mail_col].fillna('').str.lower().str.strip()
-
-                    # Sæt MATCH_KEY som index for at opdatere
+                    st.session_state.df['MATCH_KEY'] = st.session_state.df.get('MATCH_KEY', st.session_state.df[next((c for c in ['Merchant', 'Programnavn'] if c in st.session_state.df.columns))].apply(clean_name))
                     st.session_state.df.set_index('MATCH_KEY', inplace=True)
                     new_data.set_index('MATCH_KEY', inplace=True)
-                    
-                    # 1. Opdater eksisterende felter (hvis den nye fil har nyere info)
                     st.session_state.df.update(new_data)
-                    # 2. Udfyld tomme felter og tilføj helt nye rækker
                     st.session_state.df = st.session_state.df.combine_first(new_data)
-                    
                     st.session_state.df.reset_index(inplace=True)
                 
-                st.success(f"Databasen opdateret! Total antal: {len(st.session_state.df)}")
+                save_data(st.session_state.df)
+                st.success("Data gemt permanent!")
 
-# --- VISNING ---
+    if st.button("Ryd Database"):
+        if os.path.exists(DB_FILE): os.remove(DB_FILE)
+        st.session_state.df = pd.DataFrame()
+        st.rerun()
+
+# --- HOVEDVINDUE ---
 if not st.session_state.df.empty:
-    search = st.text_input("Søg efter navn, email, kategori eller MID...", "")
+    # Søgning
+    search = st.text_input("🔍 Søg i alt...", "")
     
-    # Filtrering baseret på søgning
-    df_to_show = st.session_state.df
+    df_to_show = st.session_state.df.copy()
     if search:
         mask = df_to_show.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_to_show = df_to_show[mask]
+
+    # 2. PAGINERING LOGIK
+    total_items = len(df_to_show)
+    num_pages = (total_items // items_per_page) + (1 if total_items % items_per_page > 0 else 0)
     
-    # Vis data
-    st.dataframe(df_to_show.drop(columns=['MATCH_KEY'], errors='ignore'), use_container_width=True)
+    page = st.number_input("Side", min_value=1, max_value=max(1, num_pages), step=1)
+    start_idx = (page - 1) * items_per_page
+    end_idx = start_idx + items_per_page
     
-    # Download
-    csv = st.session_state.df.to_csv(index=False).encode('utf-8')
-    st.sidebar.download_button("📥 Download Master-Database", csv, "affiliate_master_db.csv", "text/csv")
+    st.write(f"Viser {start_idx+1}-{min(end_idx, total_items)} af {total_items} annoncører")
+
+    # 3. LEAD KORT (VISNING)
+    subset = df_to_show.iloc[start_idx:end_idx]
+
+    for index, row in subset.iterrows():
+        # Find navn og vigtigste info
+        name = row.get('Merchant', row.get('Programnavn', 'Ukendt'))
+        
+        with st.container(border=True):
+            col1, col2, col3 = st.columns([2, 3, 1])
+            
+            with col1:
+                st.subheader(name)
+                st.caption(f"Netværk: {row.get('Network', 'N/A')}")
+                st.write(f"📦 Produkter: {row.get('Product Count', '0')}")
+                st.write(f"📈 EPC: {row.get('EPC (nøgletal)', 'N/A')}")
+
+            with col2:
+                # REDIGERING AF LEADS
+                new_mail = st.text_input("E-mail", value=str(row.get('Mail', '')), key=f"mail_{index}")
+                new_note = st.text_area("Kontakt-log", value=str(row.get('Kontaktet', '')), key=f"note_{index}", height=68)
+                
+                if st.button("Gem Lead Info", key=f"save_{index}"):
+                    st.session_state.df.at[index, 'Mail'] = new_mail
+                    st.session_state.df.at[index, 'Kontaktet'] = new_note
+                    save_data(st.session_state.df)
+                    st.toast(f"Gemt: {name}")
+
+            with col3:
+                st.write("Handlinger")
+                if st.button("🗑️ Slet", key=f"del_{index}"):
+                    st.session_state.df = st.session_state.df.drop(index)
+                    save_data(st.session_state.df)
+                    st.rerun()
+
 else:
-    st.info("Upload din store liste for at starte.")
+    st.info("Upload en fil for at komme i gang.")
