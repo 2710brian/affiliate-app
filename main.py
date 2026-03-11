@@ -6,45 +6,39 @@ import sqlalchemy
 
 st.set_page_config(page_title="Affiliate Master Database", layout="wide")
 
-# --- DATABASE FORBINDELSE (Railway PostgreSQL) ---
+# --- DATABASE LOGIK ---
 def get_db_connection():
-    # Railway giver automatisk en DATABASE_URL med
     db_url = os.getenv("DATABASE_URL")
     if db_url:
-        # Fix for SQLAlchemy hvis URL starter med postgres:// (skal være postgresql://)
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
         return sqlalchemy.create_engine(db_url)
     return None
 
 engine = get_db_connection()
-DB_FILE = "master_database.csv"
 
 def load_data():
     if engine:
         try:
-            return pd.read_sql("SELECT * FROM merchants", engine).fillna("")
+            df = pd.read_sql("SELECT * FROM merchants", engine)
+            return df.fillna("")
         except:
             return pd.DataFrame()
-    if os.path.exists(DB_FILE):
-        return pd.read_csv(DB_FILE).fillna("")
     return pd.DataFrame()
 
-def save_data(df):
+def save_to_db(df):
     if engine:
         df.to_sql("merchants", engine, if_exists="replace", index=False)
-    else:
-        df.to_csv(DB_FILE, index=False)
 
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
 # --- HJÆLPEFUNKTIONER ---
 def get_flag(network_str):
-    network_str = str(network_str).lower()
-    if "denmark" in network_str or " dk" in network_str: return "🇩🇰"
-    if "sweden" in network_str or " se" in network_str: return "🇸🇪"
-    if "norway" in network_str or " no" in network_str: return "🇳🇴"
+    s = str(network_str).lower()
+    if "denmark" in s or " dk" in s: return "🇩🇰"
+    if "sweden" in s or " se" in s: return "🇸🇪"
+    if "norway" in s or " no" in s: return "🇳🇴"
     return "🌐"
 
 def clean_name(name):
@@ -66,55 +60,84 @@ with st.sidebar:
         new_data = new_data.fillna("")
         
         if st.button("Opdater & Samkør"):
-            name_col = next((c for c in ['Merchant', 'Programnavn', 'Annoncør'] if c in new_data.columns), None)
+            # Identificer navne-kolonne
+            potential_names = ['Merchant', 'Programnavn', 'Annoncør']
+            name_col = next((c for c in potential_names if c in new_data.columns), None)
+            
             if name_col:
                 new_data['MATCH_KEY'] = new_data[name_col].apply(clean_name)
-                # Tilføj flag automatisk hvis netværk findes
-                if 'Network' in new_data.columns:
-                    new_data['Land'] = new_data['Network'].apply(get_flag)
+                # Tilføj flag/land hvis det ikke findes
+                if 'Land' not in new_data.columns:
+                    new_data['Land'] = new_data.get('Network', '').apply(get_flag)
                 
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
+                    # Gør eksisterende data klar til merge
+                    if 'MATCH_KEY' not in st.session_state.df.columns:
+                        st.session_state.df['MATCH_KEY'] = st.session_state.df[name_col].apply(clean_name)
+                    
                     st.session_state.df = st.session_state.df.set_index('MATCH_KEY').combine_first(new_data.set_index('MATCH_KEY')).reset_index()
                 
-                save_data(st.session_state.df)
+                save_to_db(st.session_state.df)
                 st.success("Database opdateret!")
 
     st.markdown("---")
+    st.header("Eksport")
     if not st.session_state.df.empty:
-        st.download_button("📥 Download Master CSV", st.session_state.df.to_csv(index=False), "master.csv")
+        # Master Export
+        st.download_button("📥 Master (Alt)", st.session_state.df.to_csv(index=False), "master_full.csv")
+
+    if st.button("🚨 Ryd alt"):
+        st.session_state.df = pd.DataFrame()
+        if engine:
+            with engine.connect() as conn:
+                conn.execute(sqlalchemy.text("DROP TABLE IF EXISTS merchants"))
+        st.rerun()
 
 # --- HOVEDVINDUE ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg...", "")
+    search = st.text_input("🔍 Søg efter alt (navn, land, kategori...)", "")
     
-    df_display = st.session_state.df.copy()
+    # Filtrerings-logik
+    df_filtered = st.session_state.df.copy()
     if search:
-        mask = df_display.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
-        df_display = df_display[mask]
+        mask = df_filtered.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
+        df_filtered = df_filtered[mask]
 
-    # Visning af flag og links i data_editor
-    # Vi bruger st.column_config til at lave klikbare links
+    # Konfiguration af kolonner (Flag, Links, Sortering)
     column_config = {
-        "Merchant": st.column_config.LinkColumn("Website Link"),
-        "Programnavn": st.column_config.LinkColumn("Website Link"),
-        "Land": st.column_config.TextColumn("Land", width="small")
+        "Land": st.column_config.TextColumn("Land", width="small", help="Nationalitet"),
+        "Merchant": st.column_config.LinkColumn("Website", help="Klik for at åbne"),
+        "Programnavn": st.column_config.LinkColumn("Website", help="Klik for at åbne"),
+        "MATCH_KEY": None # Skjul denne kolonne
     }
 
-    st.write(f"Antal annoncører: {len(df_display)}")
+    st.write(f"Viser **{len(df_filtered)}** annoncører")
 
+    # DEN EDITERBARE TABEL
+    # Her kan brugeren sortere, flytte kolonner og rette
     edited_df = st.data_editor(
-        df_display,
+        df_filtered,
         column_config=column_config,
         use_container_width=True,
         num_rows="dynamic",
-        height=600
+        height=600,
+        key="main_editor"
     )
 
-    if st.button("💾 Gem alle rettelser"):
-        st.session_state.df = edited_df
-        save_data(edited_df)
-        st.success("Gemt i databasen!")
+    # Gem-sektion
+    col_save, col_exp_filter = st.columns([1, 1])
+    with col_save:
+        if st.button("💾 Gem alle rettelser permanent"):
+            # Vi opdaterer kun de rækker der er i det filtrerede view tilbage i master
+            st.session_state.df.update(edited_df)
+            save_to_db(st.session_state.df)
+            st.success("Ændringer gemt i databasen!")
+
+    with col_exp_filter:
+        # Download kun det man har søgt frem
+        st.download_button("📥 Download filtrerede data", edited_df.to_csv(index=False), "filtreret_export.csv")
+
 else:
-    st.info("Upload en fil for at starte.")
+    st.info("Upload en fil for at starte databasen.")
