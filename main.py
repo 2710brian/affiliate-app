@@ -22,20 +22,20 @@ def get_engine():
 
 db_engine = get_engine()
 
-# --- INTELLIGENT RENSNING OG TYPE-KONVERTERING ---
+# --- INTELLIGENT TYPE-KONVERTERING ---
 def optimize_dtypes(df):
     if df.empty:
         return df
     
-    # 1. Erstat tekniske fejl-ord med rigtige tomme værdier
+    # Standard rens for alle tekstfelter
     df = df.replace(['NaT', 'nan', 'None', '<NA>', 'nan.0'], '')
     
-    # 2. Gør "Product Count" til tal (fjern tusindtal-separatorer)
+    # Intelligent konvertering af Product Count (hvis den findes)
     if 'Product Count' in df.columns:
         df['Product Count'] = df['Product Count'].astype(str).str.replace(r'[,.]', '', regex=True)
         df['Product Count'] = pd.to_numeric(df['Product Count'], errors='coerce').fillna(0).astype(int)
     
-    # 3. Gør "EPC" til kommatal
+    # Intelligent konvertering af EPC (hvis den findes)
     if 'EPC (nøgletal)' in df.columns:
         df['EPC (nøgletal)'] = df['EPC (nøgletal)'].astype(str).str.replace(',', '.')
         df['EPC (nøgletal)'] = pd.to_numeric(df['EPC (nøgletal)'], errors='coerce').fillna(0.0)
@@ -60,7 +60,6 @@ def save_data(df):
                     df[col] = df[col].apply(lambda x: f"https://www.{str(x).lower().strip().replace(' ', '')}.dk" 
                                             if isinstance(x, str) and len(x) > 2 and '.' not in x and not str(x).startswith('http') else x)
             
-            # Gem i databasen
             df.to_sql('merchants', db_engine, if_exists='replace', index=False)
             return True
         except Exception as e:
@@ -83,15 +82,24 @@ st.title("💼 Affiliate CRM Pro")
 with st.sidebar:
     st.header("⚙️ CRM Indstillinger")
     
-    if st.button("💾 GEM ALLE RETTELSER", type="primary", use_container_width=True):
-        if save_data(st.session_state.df):
-            st.success("Gemt permanent!")
-            st.rerun()
+    if st.button("💣 NULSTIL ALT", use_container_width=True):
+        if db_engine:
+            with db_engine.connect() as conn:
+                conn.execute(text("DROP TABLE IF EXISTS merchants"))
+                conn.commit()
+        st.session_state.df = pd.DataFrame()
+        st.rerun()
+
+    if not st.session_state.df.empty:
+        if st.button("💾 GEM ALLE RETTELSER", type="primary", use_container_width=True):
+            if save_data(st.session_state.df):
+                st.success("Gemt permanent!")
+                st.rerun()
 
     st.markdown("---")
     st.header("📥 Import")
-    valgt_kategori = st.text_input("Kategori:", "Bolig, Have og Interiør")
-    uploaded_file = st.file_uploader("Upload fil", type=['csv', 'xlsx'])
+    valgt_kategori = st.text_input("Kategori for denne fil:", "Bolig, Have og Interiør")
+    uploaded_file = st.file_uploader("Upload Excel/CSV", type=['csv', 'xlsx'])
     
     if uploaded_file:
         if st.button("Flet data ind i CRM", use_container_width=True):
@@ -107,34 +115,34 @@ with st.sidebar:
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
-                    st.session_state.df['MATCH_KEY'] = st.session_state.df[next((c for c in ['Merchant', 'Programnavn'] if c in st.session_state.df.columns), name_col)].apply(clean_name_for_match)
-                    # Merge logik
+                    # Tjek for MATCH_KEY i eksisterende data
+                    if 'MATCH_KEY' not in st.session_state.df.columns:
+                        ex_name_col = next((c for c in ['Merchant', 'Programnavn'] if c in st.session_state.df.columns), name_col)
+                        st.session_state.df['MATCH_KEY'] = st.session_state.df[ex_name_col].apply(clean_name_for_match)
+                    
                     existing = st.session_state.df.set_index('MATCH_KEY')
                     incoming = new_data.set_index('MATCH_KEY')
-                    existing.update(incoming[['Product Count', 'EPC (nøgletal)']].filter(items=incoming.columns))
+                    
+                    # FEJLSIKRING: Find kun kolonner der faktisk findes i den nye fil
+                    cols_to_update = [c for c in incoming.columns if c in ['Product Count', 'EPC (nøgletal)', 'Status', 'Network']]
+                    if cols_to_update:
+                        existing.update(incoming[cols_to_update])
+                    
                     st.session_state.df = existing.combine_first(incoming).reset_index()
                 
                 save_data(st.session_state.df)
+                st.success("Flettet uden fejl!")
                 st.rerun()
 
-    st.markdown("---")
-    if st.button("🚨 Slet alt"):
-        if db_engine:
-            with db_engine.connect() as conn:
-                conn.execute(text("DROP TABLE IF EXISTS merchants"))
-                conn.commit()
-        st.session_state.df = pd.DataFrame()
-        st.rerun()
-
-# --- CRM TABEL ---
+# --- CRM HOVEDTABEL ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg (navn, mail, kategori...)", "")
+    search = st.text_input("🔍 Søg i CRM...", "")
     
     df_to_show = st.session_state.df.copy()
     
     # Kolonne-orden
     all_cols = list(df_to_show.columns)
-    important = [c for c in ['Land', 'Merchant', 'Kategori', 'Status', 'Product Count', 'EPC (nøgletal)', 'Mail', 'Kontaktet'] if c in all_cols]
+    important = [c for c in ['Merchant', 'Kategori', 'Status', 'Product Count', 'EPC (nøgletal)', 'Mail', 'Kontaktet'] if c in all_cols]
     others = [c for c in all_cols if c not in important and c != 'MATCH_KEY']
     df_to_show = df_to_show[important + others]
 
@@ -142,24 +150,25 @@ if not st.session_state.df.empty:
         mask = df_to_show.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_to_show = df_to_show[mask]
 
+    # TABEL-KONFIGURATION
+    column_config = {
+        "Merchant": st.column_config.LinkColumn("Website", pinned=True),
+        "Product Count": st.column_config.NumberColumn("Produkter", format="%d"),
+        "EPC (nøgletal)": st.column_config.NumberColumn("EPC", format="%.2f"),
+    }
+
     st.write(f"Antal rækker: **{len(df_to_show)}**")
 
-    # TABEL-KONFIGURATION (Her muliggøres rigtig sortering)
     edited_df = st.data_editor(
         df_to_show,
-        column_config={
-            "Land": st.column_config.TextColumn("Land", width="small", pinned=True),
-            "Merchant": st.column_config.LinkColumn("Website", pinned=True),
-            "Product Count": st.column_config.NumberColumn("Produkter", format="%d"),
-            "EPC (nøgletal)": st.column_config.NumberColumn("EPC", format="%.2f"),
-        },
+        column_config=column_config,
         use_container_width=True,
         num_rows="dynamic",
-        height=700,
-        key="pro_crm_final_v8"
+        height=750,
+        key="crm_final_v9"
     )
 
     if not edited_df.equals(df_to_show):
         st.session_state.df.update(edited_df)
 else:
-    st.info("👋 Databasen er tom.")
+    st.info("👋 Upload din fil for at starte.")
