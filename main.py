@@ -22,20 +22,20 @@ def get_engine():
 
 db_engine = get_engine()
 
-# --- INTELLIGENT TYPE-KONVERTERING ---
+# --- TYPE-KONVERTERING (Gør sortering muligt) ---
 def optimize_dtypes(df):
     if df.empty:
         return df
     
-    # Standard rens for alle tekstfelter
+    # Rens tekst
     df = df.replace(['NaT', 'nan', 'None', '<NA>', 'nan.0'], '')
     
-    # Intelligent konvertering af Product Count (hvis den findes)
+    # Gør Product Count til rigtige tal for sortering
     if 'Product Count' in df.columns:
         df['Product Count'] = df['Product Count'].astype(str).str.replace(r'[,.]', '', regex=True)
         df['Product Count'] = pd.to_numeric(df['Product Count'], errors='coerce').fillna(0).astype(int)
     
-    # Intelligent konvertering af EPC (hvis den findes)
+    # Gør EPC til rigtige tal for sortering
     if 'EPC (nøgletal)' in df.columns:
         df['EPC (nøgletal)'] = df['EPC (nøgletal)'].astype(str).str.replace(',', '.')
         df['EPC (nøgletal)'] = pd.to_numeric(df['EPC (nøgletal)'], errors='coerce').fillna(0.0)
@@ -54,18 +54,18 @@ def load_data():
 def save_data(df):
     if db_engine:
         try:
-            # Gør links klikbare
+            # Fix links
             for col in ['Merchant', 'Programnavn', 'Website']:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: f"https://www.{str(x).lower().strip().replace(' ', '')}.dk" 
                                             if isinstance(x, str) and len(x) > 2 and '.' not in x and not str(x).startswith('http') else x)
-            
             df.to_sql('merchants', db_engine, if_exists='replace', index=False)
             return True
         except Exception as e:
             st.error(f"Fejl ved gem: {e}")
     return False
 
+# --- SESSION STATE ---
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
@@ -93,13 +93,13 @@ with st.sidebar:
     if not st.session_state.df.empty:
         if st.button("💾 GEM ALLE RETTELSER", type="primary", use_container_width=True):
             if save_data(st.session_state.df):
-                st.success("Gemt permanent!")
+                st.success("Gemt i databasen!")
                 st.rerun()
 
     st.markdown("---")
     st.header("📥 Import")
-    valgt_kategori = st.text_input("Kategori for denne fil:", "Bolig, Have og Interiør")
-    uploaded_file = st.file_uploader("Upload Excel/CSV", type=['csv', 'xlsx'])
+    valgt_kategori = st.text_input("Kategori:", "Bolig, Have og Interiør")
+    uploaded_file = st.file_uploader("Upload fil", type=['csv', 'xlsx'])
     
     if uploaded_file:
         if st.button("Flet data ind i CRM", use_container_width=True):
@@ -111,61 +111,64 @@ with st.sidebar:
             name_col = next((c for c in ['Merchant', 'Programnavn', 'Annoncør'] if c in new_data.columns), None)
             if name_col:
                 new_data['MATCH_KEY'] = new_data[name_col].apply(clean_name_for_match)
-                
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
-                    # Tjek for MATCH_KEY i eksisterende data
-                    if 'MATCH_KEY' not in st.session_state.df.columns:
-                        ex_name_col = next((c for c in ['Merchant', 'Programnavn'] if c in st.session_state.df.columns), name_col)
-                        st.session_state.df['MATCH_KEY'] = st.session_state.df[ex_name_col].apply(clean_name_for_match)
+                    existing_name_col = next((c for c in ['Merchant', 'Programnavn'] if c in st.session_state.df.columns), name_col)
+                    st.session_state.df['MATCH_KEY'] = st.session_state.df[existing_name_col].apply(clean_name_for_match)
                     
                     existing = st.session_state.df.set_index('MATCH_KEY')
                     incoming = new_data.set_index('MATCH_KEY')
                     
-                    # FEJLSIKRING: Find kun kolonner der faktisk findes i den nye fil
-                    cols_to_update = [c for c in incoming.columns if c in ['Product Count', 'EPC (nøgletal)', 'Status', 'Network']]
-                    if cols_to_update:
-                        existing.update(incoming[cols_to_update])
+                    # Opdater kun tekniske kolonner hvis de findes
+                    cols_to_upd = [c for c in incoming.columns if c in ['Product Count', 'EPC (nøgletal)', 'Status']]
+                    if cols_to_upd: existing.update(incoming[cols_to_upd])
                     
                     st.session_state.df = existing.combine_first(incoming).reset_index()
                 
                 save_data(st.session_state.df)
-                st.success("Flettet uden fejl!")
                 st.rerun()
+
+    # --- KOLONNE STYRING (Dette var væk før!) ---
+    if not st.session_state.df.empty:
+        st.markdown("---")
+        st.header("👁️ Kolonne Visning")
+        alle_cols = [c for c in list(st.session_state.df.columns) if c != 'MATCH_KEY']
+        
+        # Sæt en standard rækkefølge
+        prioriteret = ['Land', 'Merchant', 'Kategori', 'Status', 'Product Count', 'EPC (nøgletal)', 'Mail', 'Kontaktet']
+        start_cols = [c for c in prioriteret if c in alle_cols] + [c for c in alle_cols if c not in prioriteret]
+        
+        valgte_kolonner = st.multiselect("Vælg/Rækkefølge:", alle_cols, default=start_cols)
 
 # --- CRM HOVEDTABEL ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg i CRM...", "")
+    search = st.text_input("🔍 Søg i alt...", "")
     
     df_to_show = st.session_state.df.copy()
-    
-    # Kolonne-orden
-    all_cols = list(df_to_show.columns)
-    important = [c for c in ['Merchant', 'Kategori', 'Status', 'Product Count', 'EPC (nøgletal)', 'Mail', 'Kontaktet'] if c in all_cols]
-    others = [c for c in all_cols if c not in important and c != 'MATCH_KEY']
-    df_to_show = df_to_show[important + others]
-
     if search:
         mask = df_to_show.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_to_show = df_to_show[mask]
 
-    # TABEL-KONFIGURATION
-    column_config = {
-        "Merchant": st.column_config.LinkColumn("Website", pinned=True),
-        "Product Count": st.column_config.NumberColumn("Produkter", format="%d"),
-        "EPC (nøgletal)": st.column_config.NumberColumn("EPC", format="%.2f"),
-    }
+    # Brug de valgte kolonner fra sidebaren
+    if valgte_kolonner:
+        df_to_show = df_to_show[valgte_kolonner]
 
     st.write(f"Antal rækker: **{len(df_to_show)}**")
 
+    # TABEL MED PINNED COLUMNS OG RIGTIG SORTERING
     edited_df = st.data_editor(
         df_to_show,
-        column_config=column_config,
+        column_config={
+            "Land": st.column_config.TextColumn("Land", width="small", pinned=True),
+            "Merchant": st.column_config.LinkColumn("Website", pinned=True),
+            "Product Count": st.column_config.NumberColumn("Produkter", format="%d"),
+            "EPC (nøgletal)": st.column_config.NumberColumn("EPC", format="%.2f"),
+        },
         use_container_width=True,
         num_rows="dynamic",
-        height=750,
-        key="crm_final_v9"
+        height=700,
+        key="crm_final_stable_v10"
     )
 
     if not edited_df.equals(df_to_show):
