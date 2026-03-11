@@ -1,62 +1,57 @@
 import streamlit as st
 import pandas as pd
-import re
 import os
+import re
 import sqlalchemy
 from sqlalchemy import create_engine, text
 
+# --- KONFIGURATION ---
 st.set_page_config(page_title="Affiliate CRM", layout="wide")
 
-# --- DATABASE FORBINDELSE ---
-def get_db_connection():
-    # Railway tilføjer automatisk DATABASE_URL
+# --- DATABASE-FORBINDELSE ---
+def get_engine():
     db_url = os.getenv("DATABASE_URL")
     if db_url:
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
         try:
-            engine = create_engine(db_url)
-            # Test forbindelsen
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
+            engine = create_engine(db_url, pool_pre_ping=True)
             return engine
-        except Exception as e:
-            st.sidebar.error(f"Databasefejl: {e}")
+        except Exception:
             return None
     return None
 
-engine = get_db_connection()
+db_engine = get_engine()
 
-def load_from_db():
-    if engine:
+# Hent data fra Railway Database
+def load_data():
+    if db_engine:
         try:
-            df = pd.read_sql("SELECT * FROM merchants", engine)
+            df = pd.read_sql("SELECT * FROM merchants", db_engine)
             return df.fillna("")
-        except:
-            # Hvis tabellen ikke findes endnu
+        except Exception:
             return pd.DataFrame()
     return pd.DataFrame()
 
-def save_to_db(df):
-    if engine:
+# Gem data til Railway Database
+def save_data(df):
+    if db_engine:
         try:
-            # Forbered links før gem
+            # Auto-link logik: Gør navne klikbare
             for col in ['Merchant', 'Programnavn', 'Website']:
                 if col in df.columns:
                     df[col] = df[col].apply(lambda x: f"https://www.{str(x).lower().strip().replace(' ', '')}.dk" 
                                             if isinstance(x, str) and '.' not in x and len(x) > 2 else x)
             
-            # Gem til SQL (overskriver den gamle tabel med nyeste data)
-            df.to_sql("merchants", engine, if_exists="replace", index=False)
+            df.to_sql('merchants', db_engine, if_exists='replace', index=False)
             return True
         except Exception as e:
-            st.error(f"Kunne ikke gemme: {e}")
-            return False
+            st.error(f"Fejl ved gem: {e}")
     return False
 
-# Indlæs data én gang ved start
+# Indlæs data ved start
 if 'df' not in st.session_state or st.session_state.df.empty:
-    st.session_state.df = load_from_db()
+    st.session_state.df = load_data()
 
 # --- HJÆLPEFUNKTIONER ---
 def detect_land(row):
@@ -72,32 +67,33 @@ def clean_name(name):
     name = re.sub(r'\.dk|\.se|\.no|\.com|aps|a/s|as|dk|se|no', '', name)
     return re.sub(r'[^a-z0-9]', '', name).strip()
 
-st.title("💼 Affiliate CRM")
+# --- UI START ---
+st.title("💼 Affiliate CRM & Lead Database")
 
-# --- SIDEPANEL ---
+# --- SIDEPANEL (CRM KONTROL) ---
 with st.sidebar:
-    st.header("🏆 CRM Status")
-    if engine:
-        st.success("✅ Forbundet til Railway Database")
+    st.header("🏆 CRM Kontrol")
+    if db_engine:
+        st.success("✅ Database Online")
     else:
-        st.error("❌ Ingen Database (Bruger kun hukommelse)")
+        st.error("❌ Database Offline")
 
     if not st.session_state.df.empty:
-        if st.button("💾 GEM ALT PERMANENT", use_container_width=True, type="primary"):
-            if save_to_db(st.session_state.df):
-                st.success("Gemt i databasen!")
+        if st.button("💾 GEM ALLE RETTELSER", type="primary", use_container_width=True):
+            if save_data(st.session_state.df):
+                st.success("Gemt permanent!")
                 st.rerun()
 
     st.markdown("---")
     st.header("📥 Import / Opdater")
-    uploaded_file = st.file_uploader("Upload fil", type=['csv', 'xlsx'])
+    uploaded_file = st.file_uploader("Upload Excel/CSV", type=['csv', 'xlsx'])
     
-    if uploaded_file is not None:
+    if uploaded_file:
         file_ext = uploaded_file.name.split('.')[-1]
         new_data = pd.read_csv(uploaded_file) if file_ext == 'csv' else pd.read_excel(uploaded_file)
         new_data = new_data.fillna("")
         
-        if st.button("Flet & Gem i Database", use_container_width=True):
+        if st.button("Flet & Gem", use_container_width=True):
             potential_names = ['Merchant', 'Programnavn', 'Annoncør']
             name_col = next((c for c in potential_names if c in new_data.columns), None)
             
@@ -108,29 +104,26 @@ with st.sidebar:
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
-                    # Merge logik
-                    existing = st.session_state.df.set_index('MATCH_KEY')
-                    incoming = new_data.set_index('MATCH_KEY')
-                    existing.update(incoming)
-                    st.session_state.df = existing.combine_first(incoming).reset_index()
+                    st.session_state.df['MATCH_KEY'] = st.session_state.df[next((c for c in potential_names if c in st.session_state.df.columns), name_col)].apply(clean_name)
+                    st.session_state.df = st.session_state.df.set_index('MATCH_KEY').combine_first(new_data.set_index('MATCH_KEY')).reset_index()
                 
-                save_to_db(st.session_state.df)
+                save_data(st.session_state.df)
                 st.rerun()
 
     st.markdown("---")
     if not st.session_state.df.empty:
-        st.download_button("📥 Master Export", st.session_state.df.to_csv(index=False), "crm_master.csv", use_container_width=True)
+        st.download_button("📥 Master Export (CSV)", st.session_state.df.to_csv(index=False), "master.csv", use_container_width=True)
 
-# --- HOVEDVINDUE ---
+# --- CRM TABEL ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg i CRM...", "")
+    search = st.text_input("🔍 Søg efter annoncør, land, mail eller noter...", "")
     
     df_to_show = st.session_state.df
     if search:
         mask = df_to_show.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_to_show = df_to_show[mask]
 
-    # Konfiguration
+    # Konfiguration (Links, Flag, Sortering)
     column_config = {
         "Land": st.column_config.TextColumn("Land", width="small"),
         "Merchant": st.column_config.LinkColumn("Website"),
@@ -138,18 +131,20 @@ if not st.session_state.df.empty:
         "MATCH_KEY": None 
     }
 
-    # EDITERBAR TABEL
+    st.write(f"Viser **{len(df_to_show)}** annoncører")
+
+    # Den editerbare Excel-tabel
     edited_df = st.data_editor(
         df_to_show,
         column_config=column_config,
         use_container_width=True,
         num_rows="dynamic",
-        height=700,
-        key="crm_editor"
+        height=750,
+        key="crm_table"
     )
 
-    # Synkroniser ændringer tilbage til session_state
+    # Synkroniser ændringer løbende til session
     if not edited_df.equals(df_to_show):
         st.session_state.df.update(edited_df)
 else:
-    st.info("👋 Upload en fil for at starte databasen.")
+    st.info("👋 Upload din liste for at starte dit CRM.")
