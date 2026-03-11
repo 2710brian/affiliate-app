@@ -81,24 +81,16 @@ st.title("💼 Affiliate CRM Pro")
 # --- SIDEPANEL ---
 with st.sidebar:
     st.header("🚨 DATABASE VÆRKTØJ")
-    
-    # NULSTIL KNAPPEN (LIGGER ØVERST NU)
-    if st.button("💣 NULSTIL ALT (Slet Database)", use_container_width=True):
+    if st.button("💣 NULSTIL ALT", use_container_width=True):
         if db_engine:
             with db_engine.connect() as conn:
                 conn.execute(text("DROP TABLE IF EXISTS merchants"))
                 conn.commit()
         st.session_state.df = pd.DataFrame()
-        st.success("Databasen er slettet!")
         st.rerun()
 
     st.markdown("---")
     st.header("🏆 CRM Kontrol")
-    if db_engine:
-        st.success("✅ Database Online")
-    else:
-        st.error("❌ Database Offline")
-
     if not st.session_state.df.empty:
         if st.button("💾 GEM & RYD OP", type="primary", use_container_width=True):
             if save_data(st.session_state.df):
@@ -108,12 +100,19 @@ with st.sidebar:
 
     st.markdown("---")
     st.header("📥 Import / Sync")
+    
+    # NYT FELT: Vælg kategori for denne fil
+    valgt_kategori = st.text_input("Hvilken kategori er dette?", "Bolig, Have og Interiør")
+    
     uploaded_file = st.file_uploader("Upload Excel/CSV", type=['csv', 'xlsx'])
     
     if uploaded_file:
         file_ext = uploaded_file.name.split('.')[-1]
         new_data = pd.read_csv(uploaded_file) if file_ext == 'csv' else pd.read_excel(uploaded_file)
-        new_data = clean_database_logic(new_data)
+        new_data = new_data.fillna("")
+        
+        # STEMPEL rækker med kategorien
+        new_data['Kategori'] = valgt_kategori
         
         if st.button("Flet & Opdater CRM", use_container_width=True):
             potential_names = ['Merchant', 'Programnavn', 'Annoncør']
@@ -140,6 +139,15 @@ if not st.session_state.df.empty:
     search = st.text_input("🔍 Søg i alt...", "")
     
     df_to_show = st.session_state.df.copy()
+    
+    # Rækkefølge af kolonner (Vi sætter Kategori før Segment)
+    cols = list(df_to_show.columns)
+    if 'Kategori' in cols and 'Segment' in cols:
+        cols.remove('Kategori')
+        segment_idx = cols.index('Segment')
+        cols.insert(segment_idx, 'Kategori')
+        df_to_show = df_to_show[cols]
+    
     if search:
         mask = df_to_show.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_to_show = df_to_show[mask]
@@ -147,11 +155,11 @@ if not st.session_state.df.empty:
     column_config = {
         "Land": st.column_config.TextColumn("Land", width="small", pinned=True),
         "Merchant": st.column_config.LinkColumn("Website", pinned=True),
-        "Programnavn": st.column_config.LinkColumn("Website"),
+        "Kategori": st.column_config.TextColumn("Hovedkategori", width="medium"),
         "MATCH_KEY": None 
     }
 
-    st.write(f"Antal unikke annoncører: **{len(df_to_show)}**")
+    st.write(f"Antal annoncører: **{len(df_to_show)}**")
 
     edited_df = st.data_editor(
         df_to_show,
@@ -159,10 +167,10 @@ if not st.session_state.df.empty:
         use_container_width=True,
         num_rows="dynamic",
         height=650,
-        key="crm_editor_v4"
+        key="crm_editor_v5"
     )
 
     if not edited_df.equals(df_to_show):
         st.session_state.df.update(edited_df)
 else:
-    st.info("👋 Databasen er tom. Upload din første fil for at starte.")
+    st.info("👋 Databasen er tom. Skriv en kategori og upload din fil.")
