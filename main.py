@@ -4,75 +4,67 @@ import pandas as pd
 # --- KONFIGURATION ---
 st.set_page_config(page_title="Affiliate Lead Maskine", layout="wide")
 
-# --- DATA-HÅNDTERING (DATABASE) ---
-# Vi bruger 'session_state' til at gemme dine rettelser midlertidigt. 
-# Senere forbinder vi dette til en rigtig database på Railway.
+# --- DATABASE LOGIK ---
+# Vi bruger session_state til at holde på data, mens du er logget ind
 if 'df' not in st.session_state:
-    # Her er et uddrag af de data, du sendte mig før, samkørt.
-    initial_data = [
-        {"Merchant": "3-nordic", "Kategori": "Bolig, Have og interiør", "Network": "Partner-ads", "Produkter": "3,146", "EPC": "0.69", "Kommission": "8,00 %", "Status": "Godkendt", "Mail": "", "Noter": ""},
-        {"Merchant": "Boligcenter.dk", "Kategori": "Bolig, Have og interiør", "Network": "Partner-ads", "Produkter": "546,119", "EPC": "N/A", "Kommission": "N/A", "Status": "Godkendt", "Mail": "", "Noter": "Kontaktet 28/02/2026"},
-        {"Merchant": "AndLight DK", "Kategori": "Bolig, Have og interiør", "Network": "Partner-ads", "Produkter": "31,166", "EPC": "4.23", "Kommission": "7,00 %", "Status": "Afvist", "Mail": "", "Noter": ""},
-        {"Merchant": "Badeshop", "Kategori": "Bolig, Have og interiør", "Network": "Partner-ads", "Produkter": "54", "EPC": "1.02", "Kommission": "5,00 %", "Status": "Godkendt", "Mail": "", "Noter": ""},
-    ]
-    st.session_state.df = pd.DataFrame(initial_data)
+    st.session_state.df = pd.DataFrame()
 
-# --- APP UI ---
 st.title("🚀 Affiliate Lead Maskine")
 
-# Søgning og Filtrering
-col_search, col_filter = st.columns([2, 1])
-with col_search:
-    search_query = st.text_input("🔍 Søg efter annoncør (navn eller kategori)...", "")
-with col_filter:
-    categories = ["Alle"] + list(st.session_state.df['Kategori'].unique())
-    selected_cat = st.selectbox("Filter: Kategori", categories)
+# --- UPLOAD SEKTION ---
+st.sidebar.header("Importer Data")
+uploaded_file = st.sidebar.file_saver = st.sidebar.file_uploader("Upload din CSV eller Excel fil", type=['csv', 'xlsx'])
 
-# Filtrér data baseret på søgning
-filtered_df = st.session_state.df.copy()
-if selected_cat != "Alle":
-    filtered_df = filtered_df[filtered_df['Kategori'] == selected_cat]
-if search_query:
-    filtered_df = filtered_df[filtered_df['Merchant'].str.contains(search_query, case=False)]
-
-# --- VISNING AF ANNONCØR-KORT ---
-st.write(f"Antal annoncører fundet: **{len(filtered_df)}**")
-
-for index, row in filtered_df.iterrows():
-    # Vi skaber et kort-agtigt layout med en 'expander' eller en 'container'
-    with st.expander(f"🏢 {row['Merchant']} | {row['Kategori']} ({row['Status']})", expanded=True):
-        c1, c2, c3 = st.columns([1, 1, 1])
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            new_data = pd.read_csv(uploaded_file)
+        else:
+            new_data = pd.read_excel(uploaded_file)
         
-        with c1:
-            st.markdown("**Netværks Info**")
-            st.write(f"🌐 Netværk: {row['Network']}")
-            st.write(f"📦 Produkter: {row['Produkter']}")
-            st.write(f"💰 EPC: {row['EPC']}")
-            st.write(f"📈 Kommission: {row['Kommission']}")
-        
-        with c2:
-            st.markdown("**Lead Detaljer**")
-            # Her kan du redigere e-mail og noter
-            new_mail = st.text_input("E-mail", value=row['Mail'], key=f"mail_{index}")
-            new_notes = st.text_area("Kontakt-log / Noter", value=row['Noter'], key=f"notes_{index}", height=68)
+        if st.sidebar.button("Indlæs data til maskinen"):
+            st.session_state.df = new_data
+            st.sidebar.success(f"Indlæst {len(new_data)} rækker!")
+    except Exception as e:
+        st.sidebar.error(f"Fejl ved indlæsning: {e}")
+
+# --- DASHBOARD ---
+if st.session_state.df.empty:
+    st.info("👋 Velkommen! Start med at uploade din fil i menuen til venstre.")
+else:
+    # Søgning
+    search_query = st.text_input("🔍 Søg efter annoncør...", "")
+    
+    filtered_df = st.session_state.df
+    if search_query:
+        # Vi søger i 'Merchant' eller 'Programnavn' alt efter hvad kolonnen hedder
+        col_name = 'Merchant' if 'Merchant' in filtered_df.columns else 'Programnavn'
+        filtered_df = filtered_df[filtered_df[col_name].astype(str).str.contains(search_query, case=False)]
+
+    st.write(f"Viser **{len(filtered_df)}** annoncører")
+
+    # Vis kort
+    for index, row in filtered_df.iterrows():
+        name = row['Merchant'] if 'Merchant' in row else row['Programnavn']
+        with st.expander(f"🏢 {name}"):
+            c1, c2, c3 = st.columns([1, 1, 1])
+            with c1:
+                st.write("**Info**")
+                # Vi viser de kolonner der findes i din fil
+                for col in ['Network', 'Kategori', 'Status', 'Product Count']:
+                    if col in row: st.write(f"{col}: {row[col]}")
             
-            if st.button("Gem ændringer", key=f"save_{index}"):
-                st.session_state.df.at[index, 'Mail'] = new_mail
-                st.session_state.df.at[index, 'Noter'] = new_notes
-                st.success("Lead opdateret!")
+            with c2:
+                st.write("**Lead Data**")
+                # Her kan du rette (bemærk: gemmes kun i denne session indtil vi kobler rigtig database på)
+                mail = st.text_input("E-mail", value=row.get('Mail', ''), key=f"mail_{index}")
+                noter = st.text_area("Noter", value=row.get('Kontaktet', ''), key=f"note_{index}")
 
-        with c3:
-            st.markdown("**Handlinger**")
-            st.write("Skal denne fjernes?")
-            if st.button("❌ Slet Annoncør", key=f"del_{index}"):
-                st.session_state.df = st.session_state.df.drop(index)
-                st.rerun()
+            with c3:
+                if st.button("❌ Slet", key=f"del_{index}"):
+                    st.session_state.df = st.session_state.df.drop(index)
+                    st.rerun()
 
 # --- EKSPORT ---
-st.sidebar.markdown("---")
-st.sidebar.download_button(
-    label="📥 Download Master-liste (CSV)",
-    data=st.session_state.df.to_csv(index=False),
-    file_name="affiliate_leads_export.csv",
-    mime="text/csv"
-)
+if not st.session_state.df.empty:
+    st.sidebar.download_button("📥 Download opdateret liste", st.session_state.df.to_csv(index=False), "mine_leads.csv")
