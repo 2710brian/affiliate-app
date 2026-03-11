@@ -26,9 +26,9 @@ db_engine = get_engine()
 def clean_database_logic(df):
     if df.empty:
         return df
-    # Fjern tekniske fejl-værdier
+    # Rens tekniske fejl-værdier
     df = df.astype(str).replace(['NaT', 'nan', 'None', '<NA>', 'nan.0'], '')
-    # Slet dubletter baseret på MATCH_KEY
+    # Fjern dubletter baseret på MATCH_KEY
     if 'MATCH_KEY' in df.columns:
         df['temp_count'] = (df != '').sum(axis=1)
         df = df.sort_values('temp_count', ascending=False).drop_duplicates('MATCH_KEY').drop(columns=['temp_count'])
@@ -70,7 +70,7 @@ def detect_land_icon(val):
     return "🌐"
 
 def clean_name_for_match(name):
-    if pd.isna(name): return ""
+    if pd.isna(name) or name == "": return "unknown"
     name = str(name).lower().strip()
     name = re.sub(r'\.dk|\.se|\.no|\.com|aps|a/s|as|dk|se|no', '', name)
     return re.sub(r'[^a-z0-9]', '', name)
@@ -101,9 +101,7 @@ with st.sidebar:
     st.markdown("---")
     st.header("📥 Import / Sync")
     
-    # NYT FELT: Vælg kategori for denne fil
     valgt_kategori = st.text_input("Hvilken kategori er dette?", "Bolig, Have og Interiør")
-    
     uploaded_file = st.file_uploader("Upload Excel/CSV", type=['csv', 'xlsx'])
     
     if uploaded_file:
@@ -111,7 +109,7 @@ with st.sidebar:
         new_data = pd.read_csv(uploaded_file) if file_ext == 'csv' else pd.read_excel(uploaded_file)
         new_data = new_data.fillna("")
         
-        # STEMPEL rækker med kategorien
+        # TILFØJ KATEGORI TIL NYE DATA
         new_data['Kategori'] = valgt_kategori
         
         if st.button("Flet & Opdater CRM", use_container_width=True):
@@ -126,8 +124,11 @@ with st.sidebar:
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
-                    existing_name_col = next((c for c in potential_names if c in st.session_state.df.columns), name_col)
-                    st.session_state.df['MATCH_KEY'] = st.session_state.df[existing_name_col].apply(clean_name_for_match)
+                    # Sikr MATCH_KEY på eksisterende data
+                    current_cols = st.session_state.df.columns
+                    ex_name_col = next((c for c in potential_names if c in current_cols), name_col)
+                    st.session_state.df['MATCH_KEY'] = st.session_state.df[ex_name_col].apply(clean_name_for_match)
+                    
                     combined = st.session_state.df.set_index('MATCH_KEY').combine_first(new_data.set_index('MATCH_KEY')).reset_index()
                     st.session_state.df = clean_database_logic(combined)
                 
@@ -140,13 +141,16 @@ if not st.session_state.df.empty:
     
     df_to_show = st.session_state.df.copy()
     
-    # Rækkefølge af kolonner (Vi sætter Kategori før Segment)
-    cols = list(df_to_show.columns)
-    if 'Kategori' in cols and 'Segment' in cols:
-        cols.remove('Kategori')
-        segment_idx = cols.index('Segment')
-        cols.insert(segment_idx, 'Kategori')
-        df_to_show = df_to_show[cols]
+    # TVING KATEGORI FREM I RÆKKEFØLGEN
+    all_cols = list(df_to_show.columns)
+    important_cols = []
+    if 'Land' in all_cols: important_cols.append('Land')
+    if 'Merchant' in all_cols: important_cols.append('Merchant')
+    if 'Kategori' in all_cols: important_cols.append('Kategori')
+    
+    # Resten af kolonnerne
+    other_cols = [c for c in all_cols if c not in important_cols and c != 'MATCH_KEY']
+    df_to_show = df_to_show[important_cols + other_cols]
     
     if search:
         mask = df_to_show.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
@@ -155,8 +159,7 @@ if not st.session_state.df.empty:
     column_config = {
         "Land": st.column_config.TextColumn("Land", width="small", pinned=True),
         "Merchant": st.column_config.LinkColumn("Website", pinned=True),
-        "Kategori": st.column_config.TextColumn("Hovedkategori", width="medium"),
-        "MATCH_KEY": None 
+        "Kategori": st.column_config.TextColumn("Kategori", width="medium"),
     }
 
     st.write(f"Antal annoncører: **{len(df_to_show)}**")
@@ -167,10 +170,10 @@ if not st.session_state.df.empty:
         use_container_width=True,
         num_rows="dynamic",
         height=650,
-        key="crm_editor_v5"
+        key="crm_editor_v6"
     )
 
     if not edited_df.equals(df_to_show):
         st.session_state.df.update(edited_df)
 else:
-    st.info("👋 Databasen er tom. Skriv en kategori og upload din fil.")
+    st.info("👋 Databasen er tom. Upload en fil i sidebaren.")
