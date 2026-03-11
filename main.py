@@ -4,9 +4,9 @@ import re
 import os
 import sqlalchemy
 
-st.set_page_config(page_title="Affiliate Master Database", layout="wide")
+st.set_page_config(page_title="Affiliate CRM", layout="wide")
 
-# --- DATABASE LOGIK ---
+# --- DATABASE FORBINDELSE ---
 def get_db_connection():
     db_url = os.getenv("DATABASE_URL")
     if db_url:
@@ -17,7 +17,7 @@ def get_db_connection():
 
 engine = get_db_connection()
 
-def load_data():
+def load_from_db():
     if engine:
         try:
             df = pd.read_sql("SELECT * FROM merchants", engine)
@@ -28,16 +28,15 @@ def load_data():
 
 def save_to_db(df):
     if engine:
-        # Sikrer links format før gem
-        for col in ['Merchant', 'Programnavn', 'Website']:
+        # Sikrer link-format før gem
+        for col in ['Merchant', 'Programnavn']:
             if col in df.columns:
                 df[col] = df[col].apply(lambda x: f"https://www.{str(x).lower().strip().replace(' ', '')}.dk" 
-                                        if isinstance(x, str) and len(x) > 2 and not x.startswith('http') and '.' not in x 
-                                        else x)
+                                        if isinstance(x, str) and '.' not in x and len(x) > 2 else x)
         df.to_sql("merchants", engine, if_exists="replace", index=False)
 
 if 'df' not in st.session_state:
-    st.session_state.df = load_data()
+    st.session_state.df = load_from_db()
 
 # --- HJÆLPEFUNKTIONER ---
 def detect_land(row):
@@ -50,88 +49,84 @@ def detect_land(row):
 def clean_name(name):
     if pd.isna(name): return ""
     name = str(name).lower()
-    name = re.sub(r'\.dk|\.se|\.no|\.com|aps|a/s|as', '', name)
+    name = re.sub(r'\.dk|\.se|\.no|\.com|aps|a/s|as|dk|se|no', '', name)
     return re.sub(r'[^a-z0-9]', '', name).strip()
 
-st.title("🚀 Affiliate Master Database")
+st.title("💼 Affiliate CRM & Lead Database")
 
-# --- SIDEPANEL: KONTROL CENTER ---
+# --- SIDEPANEL ---
 with st.sidebar:
-    st.header("⚙️ Kontrol Center")
+    st.header("🏆 CRM Kontrol")
     
-    # GEM KNAP ØVERST
     if not st.session_state.df.empty:
         if st.button("💾 GEM ALLE RETTELSER", use_container_width=True, type="primary"):
-            # Her gemmer vi hvad der ligger i st.session_state fra editoren
-            if 'main_editor' in st.session_state:
-                # Opdater master med ændringer fra editor
-                edits = st.session_state.main_editor.get('edited_rows', {})
-                # Vi gemmer den nuværende session state df
-                save_to_db(st.session_state.df)
-                st.success("Alt er gemt i databasen!")
+            save_to_db(st.session_state.df)
+            st.success("CRM opdateret permanent!")
+            st.rerun()
 
     st.markdown("---")
-    st.header("📥 Import")
-    uploaded_file = st.file_uploader("Upload fil", type=['csv', 'xlsx'])
+    st.header("📥 Import / Opdatering")
+    uploaded_file = st.file_uploader("Upload fil med ændringer", type=['csv', 'xlsx'])
     
     if uploaded_file is not None:
         file_ext = uploaded_file.name.split('.')[-1]
         new_data = pd.read_csv(uploaded_file) if file_ext == 'csv' else pd.read_excel(uploaded_file)
         new_data = new_data.fillna("")
         
-        if st.button("Opdater & Samkør", use_container_width=True):
+        if st.button("Flet & Opdater Data"):
             potential_names = ['Merchant', 'Programnavn', 'Annoncør']
             name_col = next((c for c in potential_names if c in new_data.columns), None)
             
             if name_col:
                 new_data['MATCH_KEY'] = new_data[name_col].apply(clean_name)
-                new_data['Land'] = new_data.apply(detect_land, axis=1)
+                if 'Land' not in new_data.columns:
+                    new_data['Land'] = new_data.apply(detect_land, axis=1)
                 
-                # Auto-link generation før merge
-                new_data[name_col] = new_data[name_col].apply(
-                    lambda x: f"https://www.{str(x).lower().strip().replace(' ', '')}.dk" 
-                    if isinstance(x, str) and '.' not in x else x
-                )
-
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
-                    st.session_state.df = st.session_state.df.set_index('MATCH_KEY').combine_first(new_data.set_index('MATCH_KEY')).reset_index()
+                    if 'MATCH_KEY' not in st.session_state.df.columns:
+                        st.session_state.df['MATCH_KEY'] = st.session_state.df[name_col].apply(clean_name)
+                    
+                    # LOGIK: Vi sætter MATCH_KEY som index for begge
+                    existing_df = st.session_state.df.set_index('MATCH_KEY')
+                    incoming_df = new_data.set_index('MATCH_KEY')
+                    
+                    # 1. Update: Overskriver eksisterende rækker med NYE værdier fra filen
+                    existing_df.update(incoming_df)
+                    
+                    # 2. Combine_first: Udfylder huller (nye kolonner/rækker) uden at slette eksisterende
+                    # Dette sikrer at dine manuelle noter ikke bliver overskrevet af tomme felter i filen
+                    final_df = existing_df.combine_first(incoming_df)
+                    
+                    st.session_state.df = final_df.reset_index()
                 
                 save_to_db(st.session_state.df)
+                st.success("CRM opdateret med ændringer!")
                 st.rerun()
 
     st.markdown("---")
     st.header("📤 Eksport")
     if not st.session_state.df.empty:
-        # Master Export
-        st.download_button("📥 Download MASTER (Alt)", st.session_state.df.to_csv(index=False), "master_full.csv", use_container_width=True)
-        
-        # Filtreret Export (vises kun hvis der er data i appen)
-        if 'filtered_data' in st.session_state:
-             st.download_button("📥 Download UDVALGTE", st.session_state.filtered_data.to_csv(index=False), "udvalgte_leads.csv", use_container_width=True)
+        st.download_button("📥 Master Export", st.session_state.df.to_csv(index=False), "crm_master.csv", use_container_width=True)
 
-    if st.button("🚨 Ryd alt", use_container_width=True):
-        st.session_state.df = pd.DataFrame()
+    if st.button("🚨 Nulstil alt", use_container_width=True):
         if engine:
             with engine.connect() as conn:
                 conn.execute(sqlalchemy.text("DROP TABLE IF EXISTS merchants"))
+        st.session_state.df = pd.DataFrame()
         st.rerun()
 
-# --- HOVEDVINDUE ---
+# --- CRM VISNING ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg i databasen...", "")
+    search = st.text_input("🔍 Søg i CRM...", "")
     
-    # Filter logik
-    df_temp = st.session_state.df.copy()
+    df_crm = st.session_state.df.copy()
     if search:
-        mask = df_temp.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
-        df_temp = df_temp[mask]
+        mask = df_crm.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
+        df_crm = df_crm[mask]
     
-    # Gem det filtrerede data så det kan downloades fra sidebaren
-    st.session_state.filtered_data = df_temp
-
-    # Konfiguration
+    # Kolonne Konfiguration
     column_config = {
         "Land": st.column_config.TextColumn("Land", width="small"),
         "Merchant": st.column_config.LinkColumn("Website"),
@@ -139,18 +134,14 @@ if not st.session_state.df.empty:
         "MATCH_KEY": None 
     }
 
-    st.write(f"Viser **{len(df_temp)}** annoncører")
-
-    # Den editerbare tabel
-    # Sortering foregår ved at klikke på overskrifterne
+    # Tabellen viser dine data, og du kan sortere ved at klikke på overskrifterne
     st.session_state.df = st.data_editor(
-        df_temp,
+        df_crm,
         column_config=column_config,
         use_container_width=True,
         num_rows="dynamic",
-        height=700,
-        key="main_editor"
+        height=800,
+        key="crm_editor"
     )
-
 else:
-    st.info("Start med at uploade en fil i venstre side.")
+    st.info("👋 Databasen er klar. Upload en fil for at starte dit CRM.")
