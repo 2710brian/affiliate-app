@@ -28,27 +28,24 @@ def load_data():
 
 def save_to_db(df):
     if engine:
+        # Auto-link logik før gem
+        for col in ['Merchant', 'Programnavn', 'Website']:
+            if col in df.columns:
+                df[col] = df[col].apply(lambda x: f"https://{str(x).lower().strip().replace(' ', '')}.dk" 
+                                        if isinstance(x, str) and len(x) > 2 and not x.startswith('http') and '.' not in x 
+                                        else x)
         df.to_sql("merchants", engine, if_exists="replace", index=False)
-
-# Funktion til at skabe et automatisk link ud fra navnet
-def auto_generate_link(name):
-    if not name or "http" in str(name): return name
-    # Rens navnet for mærkelige tegn og mellemrum
-    clean = str(name).lower().strip()
-    clean = re.sub(r'[^a-z0-9]', '', clean)
-    if clean:
-        return f"https://www.{clean}.dk" # Vi gætter på .dk som standard
-    return name
 
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
-# --- HJÆLPEFUNKTIONER ---
-def get_flag(network_str):
-    s = str(network_str).lower()
-    if "denmark" in s or " dk" in s: return "🇩🇰"
-    if "sweden" in s or " se" in s: return "🇸🇪"
-    if "norway" in s or " no" in s: return "🇳🇴"
+# --- FORBEDRET FLAG-LOGIK ---
+def detect_land(row):
+    # Vi kigger i alle celler i rækken efter DK, SE, NO eller landenavne
+    row_str = " ".join(row.values.astype(str)).lower()
+    if any(x in row_str for x in ["denmark", " dk", "dansk"]): return "🇩🇰"
+    if any(x in row_str for x in ["sweden", " se", "svensk", "sverige"]): return "🇸🇪"
+    if any(x in row_str for x in ["norway", " no", "norsk", "norge"]): return "🇳🇴"
     return "🌐"
 
 def clean_name(name):
@@ -59,7 +56,7 @@ def clean_name(name):
 
 st.title("🚀 Affiliate Master Database")
 
-# --- SIDEPANEL ---
+# --- SIDEPANEL: EXCEL-STYLE FILTRE ---
 with st.sidebar:
     st.header("Importer Data")
     uploaded_file = st.file_uploader("Upload fil", type=['csv', 'xlsx'])
@@ -75,59 +72,69 @@ with st.sidebar:
             
             if name_col:
                 new_data['MATCH_KEY'] = new_data[name_col].apply(clean_name)
+                # Sæt flag baseret på indholdet
+                new_data['Land'] = new_data.apply(detect_land, axis=1)
                 
-                # Sæt flag
-                if 'Network' in new_data.columns:
-                    new_data['Land'] = new_data['Network'].apply(get_flag)
-                
-                # AUTOMATISK LINK GENERERING
-                # Hvis Merchant/Programnavn ikke er et link endnu, så lav et gæt
-                new_data[name_col] = new_data[name_col].apply(auto_generate_link)
-
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
+                    if 'MATCH_KEY' not in st.session_state.df.columns:
+                        st.session_state.df['MATCH_KEY'] = st.session_state.df[next((c for c in potential_names if c in st.session_state.df.columns))].apply(clean_name)
+                    
                     st.session_state.df = st.session_state.df.set_index('MATCH_KEY').combine_first(new_data.set_index('MATCH_KEY')).reset_index()
                 
                 save_to_db(st.session_state.df)
-                st.success("Database opdateret med automatiske links!")
+                st.success("Database opdateret med flag og links!")
 
     st.markdown("---")
+    st.header("Excel Filtre")
     if not st.session_state.df.empty:
-        st.download_button("📥 Master (Alt)", st.session_state.df.to_csv(index=False), "master_full.csv")
+        if 'Land' in st.session_state.df.columns:
+            selected_land = st.multiselect("Filtrer på Land", st.session_state.df['Land'].unique())
+        
+        st.markdown("---")
+        st.download_button("📥 Master Export", st.session_state.df.to_csv(index=False), "full_database.csv")
 
 # --- HOVEDVINDUE ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg efter alt...", "")
+    search = st.text_input("🔍 Søg i hele databasen...", "")
     
     df_filtered = st.session_state.df.copy()
+    
+    # Anvend sidebar filtre
+    if 'Land' in df_filtered.columns and selected_land:
+        df_filtered = df_filtered[df_filtered['Land'].isin(selected_land)]
+    
+    # Anvend søgning
     if search:
         mask = df_filtered.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_filtered = df_filtered[mask]
 
-    # Kolonne konfiguration - Gør navne-kolonnen til et link
+    # Kolonne Opsætning
     column_config = {
-        "Land": st.column_config.TextColumn("Land", width="small"),
-        "Merchant": st.column_config.LinkColumn("Website (Auto-Link)"),
-        "Programnavn": st.column_config.LinkColumn("Website (Auto-Link)"),
+        "Land": st.column_config.TextColumn("Land", width="small", help="Klik for at sortere"),
+        "Merchant": st.column_config.LinkColumn("Website"),
+        "Programnavn": st.column_config.LinkColumn("Website"),
         "MATCH_KEY": None 
     }
 
     st.write(f"Antal rækker: **{len(df_filtered)}**")
+    st.caption("💡 TIP: Klik på kolonne-navnet for at sortere. Træk i kolonnen for at flytte den.")
 
+    # DEN STORE EDITERBARE TABEL
     edited_df = st.data_editor(
         df_filtered,
         column_config=column_config,
         use_container_width=True,
         num_rows="dynamic",
-        height=600,
-        key="main_editor"
+        height=700,
+        key="excel_editor" # Fast key sikrer at sortering bevares bedre
     )
 
-    if st.button("💾 Gem alle rettelser"):
-        st.session_state.df = edited_df
-        save_to_db(edited_df)
-        st.success("Gemt!")
+    if st.button("💾 Gem rettelser permanent"):
+        st.session_state.df.update(edited_df)
+        save_to_db(st.session_state.df)
+        st.success("Gemt! Sortering og rettelser er nu i databasen.")
 
 else:
-    st.info("Upload din fil for at generere din database.")
+    st.info("Upload en fil for at starte.")
