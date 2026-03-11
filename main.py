@@ -66,17 +66,20 @@ with st.sidebar:
             
             if name_col:
                 new_data['MATCH_KEY'] = new_data[name_col].apply(clean_name)
-                # Tilføj flag/land hvis det ikke findes
-                if 'Land' not in new_data.columns:
-                    new_data['Land'] = new_data.get('Network', '').apply(get_flag)
+                
+                # FIX: Korrekt tildeling af flag
+                if 'Network' in new_data.columns:
+                    new_data['Land'] = new_data['Network'].apply(get_flag)
+                elif 'Land' not in new_data.columns:
+                    new_data['Land'] = "🌐"
                 
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
-                    # Gør eksisterende data klar til merge
                     if 'MATCH_KEY' not in st.session_state.df.columns:
                         st.session_state.df['MATCH_KEY'] = st.session_state.df[name_col].apply(clean_name)
                     
+                    # Samkør data
                     st.session_state.df = st.session_state.df.set_index('MATCH_KEY').combine_first(new_data.set_index('MATCH_KEY')).reset_index()
                 
                 save_to_db(st.session_state.df)
@@ -85,7 +88,6 @@ with st.sidebar:
     st.markdown("---")
     st.header("Eksport")
     if not st.session_state.df.empty:
-        # Master Export
         st.download_button("📥 Master (Alt)", st.session_state.df.to_csv(index=False), "master_full.csv")
 
     if st.button("🚨 Ryd alt"):
@@ -97,26 +99,26 @@ with st.sidebar:
 
 # --- HOVEDVINDUE ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg efter alt (navn, land, kategori...)", "")
+    search = st.text_input("🔍 Søg...", "")
     
-    # Filtrerings-logik
     df_filtered = st.session_state.df.copy()
     if search:
         mask = df_filtered.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_filtered = df_filtered[mask]
 
-    # Konfiguration af kolonner (Flag, Links, Sortering)
-    column_config = {
-        "Land": st.column_config.TextColumn("Land", width="small", help="Nationalitet"),
-        "Merchant": st.column_config.LinkColumn("Website", help="Klik for at åbne"),
-        "Programnavn": st.column_config.LinkColumn("Website", help="Klik for at åbne"),
-        "MATCH_KEY": None # Skjul denne kolonne
-    }
+    # Konfiguration af kolonner
+    # Vi tjekker hvilke kolonner der faktisk findes for at undgå fejl
+    cols = df_filtered.columns
+    column_config = {}
+    
+    if "Land" in cols: column_config["Land"] = st.column_config.TextColumn("Land", width="small")
+    if "Merchant" in cols: column_config["Merchant"] = st.column_config.LinkColumn("Website")
+    if "Programnavn" in cols: column_config["Programnavn"] = st.column_config.LinkColumn("Website")
+    column_config["MATCH_KEY"] = None # Skjul altid denne
 
-    st.write(f"Viser **{len(df_filtered)}** annoncører")
+    st.write(f"Antal rækker: **{len(df_filtered)}**")
 
-    # DEN EDITERBARE TABEL
-    # Her kan brugeren sortere, flytte kolonner og rette
+    # EDITERBAR TABEL
     edited_df = st.data_editor(
         df_filtered,
         column_config=column_config,
@@ -126,18 +128,16 @@ if not st.session_state.df.empty:
         key="main_editor"
     )
 
-    # Gem-sektion
     col_save, col_exp_filter = st.columns([1, 1])
     with col_save:
         if st.button("💾 Gem alle rettelser permanent"):
-            # Vi opdaterer kun de rækker der er i det filtrerede view tilbage i master
+            # Opdater master dataframe med de redigerede rækker
             st.session_state.df.update(edited_df)
             save_to_db(st.session_state.df)
-            st.success("Ændringer gemt i databasen!")
+            st.success("Gemt i databasen!")
 
     with col_exp_filter:
-        # Download kun det man har søgt frem
         st.download_button("📥 Download filtrerede data", edited_df.to_csv(index=False), "filtreret_export.csv")
 
 else:
-    st.info("Upload en fil for at starte databasen.")
+    st.info("Upload en fil i sidebaren for at starte.")
