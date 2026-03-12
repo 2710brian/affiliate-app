@@ -4,10 +4,11 @@ import os
 import re
 import sqlalchemy
 from sqlalchemy import create_engine, text
+import base64
 from datetime import datetime
 
 # --- KONFIGURATION ---
-st.set_page_config(page_title="Affiliate CRM Pro", layout="wide")
+st.set_page_config(page_title="Affiliate CRM Master", layout="wide")
 
 # --- DATABASE FORBINDELSE ---
 def get_engine():
@@ -23,44 +24,35 @@ def get_engine():
 
 db_engine = get_engine()
 
-# --- DIN MASTER RÆKKEFØLGE (1-22) ---
+# --- DEFINER DIN MASTER RÆKKEFØLGE ---
 MASTER_COLS = [
     'Date Added', 'Kategori', 'MID', 'Virksomhed', 'Website', 'Programnavn', 
     'Produkter', 'Segment', 'Salgs % (sats)', 'EPC', 'Lead/Fast (sats)', 
     'Trafik', 'Feed?', 'Fornavn', 'Efternavn', 'Mail', 'Tlf', 'Kontaktet', 
-    'Status', 'Dato', 'Network', 'Land'
+    'Status', 'Dato', 'Network', 'Land', 
+    'Ticketnr', 'Dialog', 'Opflg. dato', 'Noter', 'Fil_Navn', 'Fil_Data'
 ]
 
-# --- HJÆLPEFUNKTIONER ---
-def format_date_clean(val):
-    if not val or str(val).lower() in ['nat', 'nan', 'none', '', '00:00:00']: return ""
-    try:
-        dt = pd.to_datetime(val, dayfirst=True, errors='coerce')
-        return dt.strftime('%d/%m/%Y') if not pd.isna(dt) else str(val).split(' ')[0]
-    except: return str(val).split(' ')[0]
+DIALOG_OPTIONS = [
+    "Ikke kontakte", "Affiliate Audit", "Dialog i gang", "Oplæg sendt", 
+    "Infomail sendt", "Cold Mail", "Nystartet", "Kontaktet", "Mediebureau", 
+    "Vundet", "Tabt", "Følg op 1 mdr", "Følg op 3 mdr", "Følg op 6 mdr", 
+    "Droppet", "Call"
+]
 
+# --- HJÆLPEFUNKTIONER (FIXET FOR FEJL) ---
 def final_clean_and_sort(df):
     if df.empty: return df
     
-    # Omdøb før rens
+    # Omdøb kendte felter
     rename_map = {'Merchant': 'Virksomhed', 'Product Count': 'Produkter', 'EPC (nøgletal)': 'EPC'}
     df = df.rename(columns=rename_map)
     
-    # Rens for tekniske ord
-    df = df.astype(str).replace(['NaT', 'nan', 'None', '<NA>', 'nan.0', 'None.0', '00:00:00'], '')
+    # TVING alt til tekst før rens for at undgå AttributeError
+    df = df.astype(str)
+    df = df.replace(['NaT', 'nan', 'None', '<NA>', 'nan.0', 'None.0', '00:00:00'], '')
     
-    # Konverter tal (EPC og Produkter) - SIKKER METODE
-    if 'Produkter' in df.columns:
-        df['Produkter'] = pd.to_numeric(df['Produkter'].astype(str).str.replace(r'[^0-9]', '', regex=True), errors='coerce').fillna(0).astype(int)
-    if 'EPC' in df.columns:
-        df['EPC'] = pd.to_numeric(df['EPC'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0.0)
-
-    # Formater alle dato-kolonner
-    for col in ['Date Added', 'Dato', 'Kontaktet']:
-        if col in df.columns:
-            df[col] = df[col].apply(format_date_clean)
-
-    # Tving master rækkefølge
+    # Sikr at alle kolonner findes
     for c in MASTER_COLS:
         if c not in df.columns: df[c] = ""
     
@@ -78,6 +70,7 @@ def save_data(df):
     if db_engine:
         try:
             df = final_clean_and_sort(df)
+            # Lav unikt match-id baseret på virksomhedsnavn
             df['MATCH_KEY'] = df['Virksomhed'].str.lower().str.replace(r'[^a-z0-9]', '', regex=True)
             df = df.drop_duplicates('MATCH_KEY', keep='first')
             df.to_sql('merchants', db_engine, if_exists='replace', index=False)
@@ -91,40 +84,68 @@ def save_data(df):
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
-# --- POP-UP REDIGERING (ALLE 22 FELTER) ---
-@st.dialog("📝 Klient-kort / Hurtig-redigering", width="large")
-def edit_popup(real_df_index):
+# --- POP-UP KLIENT KORT ---
+@st.dialog("📝 Klient-kort / CRM Detaljer", width="large")
+def client_card(real_df_index):
+    # Hent data for den valgte række
     row = st.session_state.df.loc[real_df_index].to_dict()
-    st.write(f"## {row.get('Virksomhed')}")
+    
+    st.title(f"🏢 {row.get('Virksomhed')}")
     st.divider()
 
-    # Vi deler de 22 felter op i 3 kolonner i pop-up'en
-    c1, c2, c3 = st.columns(3)
-    new_values = {}
+    tab1, tab2 = st.tabs(["📋 Stamdata & Dialog", "📁 Dokumenter & Filer"])
+    
+    updates = {}
 
-    for i, col in enumerate(MASTER_COLS):
-        target_col = [c1, c2, c3][i % 3]
-        with target_col:
-            if col in ['Status']:
-                options = ["Ikke ansøgt", "Godkendt", "Afvist", "Lead oprettet", "Kontaktet", "Afventer"]
-                default_idx = options.index(row[col]) if row[col] in options else 0
-                new_values[col] = st.selectbox(col, options, index=default_idx)
-            elif col in ['Kontaktet', 'Date Added', 'Dato']:
-                new_values[col] = st.text_input(col, value=row.get(col, ""))
-            else:
-                new_values[col] = st.text_input(col, value=row.get(col, ""))
+    with tab1:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### 📞 Kontaktinformation")
+            updates['Fornavn'] = st.text_input("Fornavn", value=row.get('Fornavn', ''))
+            updates['Efternavn'] = st.text_input("Efternavn", value=row.get('Efternavn', ''))
+            updates['Mail'] = st.text_input("E-mail adresse", value=row.get('Mail', ''))
+            updates['Tlf'] = st.text_input("Direkte telefon", value=row.get('Tlf', ''))
+            updates['Website'] = st.text_input("Hjemmeside URL", value=row.get('Website', ''))
+        
+        with col2:
+            st.markdown("#### ⚙️ Pipeline & Status")
+            current_dialog = row.get('Dialog', 'Ikke kontakte')
+            d_idx = DIALOG_OPTIONS.index(current_dialog) if current_dialog in DIALOG_OPTIONS else 0
+            updates['Dialog'] = st.selectbox("Dialog / Opfølgning", DIALOG_OPTIONS, index=d_idx)
+            
+            updates['Ticketnr'] = st.text_input("Ticket nr. #", value=row.get('Ticketnr', ''))
+            updates['Opflg. dato'] = st.text_input("Næste opfølgningsdato", value=row.get('Opflg. dato', ''))
+            
+            status_opts = ["Ikke ansøgt", "Godkendt", "Afvist", "Kontaktet"]
+            curr_status = row.get('Status', 'Ikke ansøgt')
+            s_idx = status_opts.index(curr_status) if curr_status in status_opts else 0
+            updates['Status'] = st.selectbox("Netværk Status", status_opts, index=s_idx)
 
-    st.divider()
-    st.subheader("📎 Dokumenter & Billeder")
-    att = st.file_uploader("Upload info til klient (PDF, JPG, PNG)", key=f"file_{real_df_index}")
-    if att:
-        st.success(f"Fil registreret: {att.name}")
-        new_values['Vedhæftning'] = att.name # Vi gemmer navnet i databasen
+        st.divider()
+        st.markdown("#### 📓 Interne Noter (Logbog)")
+        # HER KAN DU SKRIVE DINE NOTER
+        updates['Noter'] = st.text_area("Skriv vigtig info om kunden her...", value=row.get('Noter', ''), height=200)
 
-    if st.button("💾 GEM KLIENT-DATA", type="primary", use_container_width=True):
-        for k, v in new_values.items():
-            if k in st.session_state.df.columns:
-                st.session_state.df.at[real_df_index, k] = v
+    with tab2:
+        st.subheader("📎 Vedhæftede filer")
+        if row.get('Fil_Navn'):
+            st.success(f"📂 Aktuel fil: {row['Fil_Navn']}")
+            if row.get('Fil_Data'):
+                # Muliggør download af eksisterende fil
+                b64 = row['Fil_Data']
+                href = f'<a href="data:application/octet-stream;base64,{b64}" download="{row["Fil_Navn"]}">👉 Klik her for at downloade/se filen</a>'
+                st.markdown(href, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        new_file = st.file_uploader("Upload nyt dokument (PDF, Billede, Lyd, Video)", type=['pdf', 'png', 'jpg', 'mp3', 'mp4', 'wav', 'docx'])
+        if new_file:
+            updates['Fil_Navn'] = new_file.name
+            updates['Fil_Data'] = base64.b64encode(new_file.read()).decode()
+            st.info("Ny fil er klar til at blive gemt.")
+
+    if st.button("💾 GEM ALLE ÆNDRINGER PÅ KLIENT", type="primary", use_container_width=True):
+        for k, v in updates.items():
+            st.session_state.df.at[real_df_index, k] = v
         if save_data(st.session_state.df):
             st.rerun()
 
@@ -134,23 +155,25 @@ st.title("💼 Affiliate CRM Master")
 with st.sidebar:
     st.header("📤 Eksport")
     if not st.session_state.df.empty:
-        st.download_button("📥 Download Master (Alt)", st.session_state.df.to_csv(index=False), "master.csv", use_container_width=True)
+        st.download_button("📥 Download Master (CSV)", st.session_state.df.to_csv(index=False), "crm_master.csv", use_container_width=True)
         if 'filtered_df' in st.session_state:
-            st.download_button("📥 Download Udvalgte", st.session_state.filtered_df.to_csv(index=False), "udvalgte.csv", use_container_width=True)
+            st.download_button("📥 Download Udvalgte", st.session_state.filtered_df.to_csv(index=False), "udvalgte_leads.csv", use_container_width=True)
 
     st.markdown("---")
     st.header("📥 Import")
-    kat = st.text_input("Kategori for upload:", "Bolig, Have og Interiør")
-    f = st.file_uploader("Upload fil")
-    if f and st.button("Flet & Gem"):
-        nd = pd.read_csv(f) if f.name.endswith('csv') else pd.read_excel(f)
-        nd['Kategori'] = kat
-        st.session_state.df = final_clean_and_sort(pd.concat([st.session_state.df, nd], ignore_index=True))
+    kat_name = st.text_input("Kategori for upload:", "Bolig, Have og Interiør")
+    f = st.file_uploader("Vælg fil (CSV eller Excel)")
+    if f and st.button("Flet & Gem data"):
+        file_ext = f.name.split('.')[-1]
+        new_data = pd.read_csv(f) if file_ext == 'csv' else pd.read_excel(f)
+        new_data['Kategori'] = kat_name
+        # Flet med eksisterende
+        st.session_state.df = final_clean_and_sort(pd.concat([st.session_state.df, new_data], ignore_index=True))
         save_data(st.session_state.df)
         st.rerun()
 
     st.markdown("---")
-    if st.button("🚨 Nulstil"):
+    if st.button("🚨 Nulstil Database"):
         if db_engine:
             with db_engine.connect() as conn:
                 conn.execute(text("DROP TABLE IF EXISTS merchants"))
@@ -158,9 +181,9 @@ with st.sidebar:
         st.session_state.df = pd.DataFrame()
         st.rerun()
 
-# --- CRM HOVEDTABEL ---
+# --- HOVEDVINDUE ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg i CRM (Navn, Kategori, Mail...)", "")
+    search = st.text_input("🔍 Søg i CRM...", placeholder="Søg på tværs af alle felter...")
     
     display_df = st.session_state.df.copy()
     if search:
@@ -170,11 +193,13 @@ if not st.session_state.df.empty:
     st.session_state.filtered_df = display_df
     
     st.subheader(f"Antal annoncører: {len(display_df)}")
-    st.info("💡 Marker rækken til venstre og tryk på 'Rediger Klient' herunder.")
+    st.info("💡 Klik på boksen helt til venstre for en række for at åbne Klient-kortet.")
 
-    # TABEL
+    # Vis tabellen uden de tunge fildata
+    view_cols = [c for c in display_df.columns if c != 'Fil_Data']
+    
     sel = st.dataframe(
-        display_df,
+        display_df[view_cols],
         column_config={"Website": st.column_config.LinkColumn("Website")},
         use_container_width=True,
         selection_mode="single-row",
@@ -182,10 +207,10 @@ if not st.session_state.df.empty:
         height=600
     )
 
+    # AUTO-POPUP NÅR EN RÆKKE VÆLGES
     if sel.selection.rows:
         row_idx = sel.selection.rows[0]
         real_idx = display_df.index[row_idx]
-        if st.button(f"✏️ Rediger Klient: {display_df.iloc[row_idx]['Virksomhed']}", type="primary", use_container_width=True):
-            edit_popup(real_idx)
+        client_card(real_idx)
 else:
-    st.info("👋 Databasen er tom. Upload en fil for at starte.")
+    st.info("👋 Databasen er tom. Upload en fil for at starte dit CRM.")
