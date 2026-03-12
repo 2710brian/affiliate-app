@@ -22,31 +22,48 @@ def get_engine():
 
 db_engine = get_engine()
 
-# --- TYPE-KONVERTERING (Gør sortering muligt) ---
-def optimize_dtypes(df):
+# --- RENSE- OG TYPE-MOTOR (Vigtig for sortering) ---
+def clean_and_fix_types(df):
     if df.empty:
         return df
     
-    # Rens tekst
-    df = df.replace(['NaT', 'nan', 'None', '<NA>', 'nan.0'], '')
+    # Fjern tekniske fejl-ord
+    df = df.replace(['NaT', 'nan', 'None', '<NA>', 'nan.0', 'unknown'], '')
     
-    # Gør Product Count til rigtige tal for sortering
+    # Gør Product Count til tal (fjern punktum/komma først)
     if 'Product Count' in df.columns:
         df['Product Count'] = df['Product Count'].astype(str).str.replace(r'[,.]', '', regex=True)
         df['Product Count'] = pd.to_numeric(df['Product Count'], errors='coerce').fillna(0).astype(int)
     
-    # Gør EPC til rigtige tal for sortering
+    # Gør EPC til tal
     if 'EPC (nøgletal)' in df.columns:
         df['EPC (nøgletal)'] = df['EPC (nøgletal)'].astype(str).str.replace(',', '.')
         df['EPC (nøgletal)'] = pd.to_numeric(df['EPC (nøgletal)'], errors='coerce').fillna(0.0)
+
+    # Rens alle andre kolonner for 'None' tekst
+    for col in df.columns:
+        df[col] = df[col].astype(str).replace('None', '')
         
     return df
+
+# --- HJÆLPEFUNKTIONER ---
+def clean_name_for_match(name):
+    if not name or name == "" or name == "None": return "temp_" + os.urandom(4).hex()
+    name = str(name).lower().strip()
+    name = re.sub(r'\.dk|\.se|\.no|\.com|aps|a/s|as|dk|se|no', '', name)
+    return re.sub(r'[^a-z0-9]', '', name)
+
+def generate_website_link(name):
+    if not name or name == "" or "http" in str(name): return name
+    clean = str(name).lower().strip().replace(" ", "").replace(".dk", "").replace(".se", "")
+    clean = re.sub(r'[^a-z0-9]', '', clean)
+    return f"https://www.{clean}.dk" if clean else ""
 
 def load_data():
     if db_engine:
         try:
             df = pd.read_sql("SELECT * FROM merchants", db_engine)
-            return optimize_dtypes(df)
+            return clean_and_fix_types(df)
         except Exception:
             return pd.DataFrame()
     return pd.DataFrame()
@@ -54,11 +71,10 @@ def load_data():
 def save_data(df):
     if db_engine:
         try:
-            # Fix links
-            for col in ['Merchant', 'Programnavn', 'Website']:
-                if col in df.columns:
-                    df[col] = df[col].apply(lambda x: f"https://www.{str(x).lower().strip().replace(' ', '')}.dk" 
-                                            if isinstance(x, str) and len(x) > 2 and '.' not in x and not str(x).startswith('http') else x)
+            df = clean_and_fix_types(df)
+            # Slet dubletter før gem for at undgå 'Duplicate labels' fejl
+            if 'MATCH_KEY' in df.columns:
+                df = df.drop_duplicates('MATCH_KEY', keep='first')
             df.to_sql('merchants', db_engine, if_exists='replace', index=False)
             return True
         except Exception as e:
@@ -66,15 +82,8 @@ def save_data(df):
     return False
 
 # --- SESSION STATE ---
-if 'df' not in st.session_state:
+if 'df' not in st.session_state or st.session_state.df is None:
     st.session_state.df = load_data()
-
-# --- HJÆLPEFUNKTIONER ---
-def clean_name_for_match(name):
-    if pd.isna(name) or name == "": return "unknown_" + os.urandom(4).hex()
-    name = str(name).lower().strip()
-    name = re.sub(r'\.dk|\.se|\.no|\.com|aps|a/s|as', '', name)
-    return re.sub(r'[^a-z0-9]', '', name)
 
 st.title("💼 Affiliate CRM Pro")
 
@@ -93,85 +102,94 @@ with st.sidebar:
     if not st.session_state.df.empty:
         if st.button("💾 GEM ALLE RETTELSER", type="primary", use_container_width=True):
             if save_data(st.session_state.df):
-                st.success("Gemt i databasen!")
+                st.success("Alt er gemt!")
                 st.rerun()
 
     st.markdown("---")
-    st.header("📥 Import")
-    valgt_kategori = st.text_input("Kategori:", "Bolig, Have og Interiør")
-    uploaded_file = st.file_uploader("Upload fil", type=['csv', 'xlsx'])
+    st.header("📥 Import / Sync")
+    valgt_kategori = st.text_input("Kategori for denne fil:", "Bolig, Have og Interiør")
+    uploaded_file = st.file_uploader("Upload Excel/CSV", type=['csv', 'xlsx'])
     
     if uploaded_file:
-        if st.button("Flet data ind i CRM", use_container_width=True):
+        if st.button("Flet & Opdater CRM", use_container_width=True):
             file_ext = uploaded_file.name.split('.')[-1]
             new_data = pd.read_csv(uploaded_file) if file_ext == 'csv' else pd.read_excel(uploaded_file)
-            new_data = optimize_dtypes(new_data)
-            new_data['Kategori'] = valgt_kategori
+            new_data = clean_and_fix_types(new_data)
             
             name_col = next((c for c in ['Merchant', 'Programnavn', 'Annoncør'] if c in new_data.columns), None)
             if name_col:
                 new_data['MATCH_KEY'] = new_data[name_col].apply(clean_name_for_match)
+                new_data['Kategori'] = valgt_kategori
+                # Lav links hvis de mangler
+                if 'Website' not in new_data.columns:
+                    new_data['Website'] = new_data[name_col].apply(generate_website_link)
+                
+                # Fjern dubletter i den indkommende fil før merge
+                new_data = new_data.drop_duplicates('MATCH_KEY')
+
                 if st.session_state.df.empty:
                     st.session_state.df = new_data
                 else:
-                    existing_name_col = next((c for c in ['Merchant', 'Programnavn'] if c in st.session_state.df.columns), name_col)
-                    st.session_state.df['MATCH_KEY'] = st.session_state.df[existing_name_col].apply(clean_name_for_match)
+                    # Gør eksisterende data klar
+                    ex_name_col = next((c for c in ['Merchant', 'Programnavn'] if c in st.session_state.df.columns), name_col)
+                    st.session_state.df['MATCH_KEY'] = st.session_state.df[ex_name_col].apply(clean_name_for_match)
+                    # Fjern eksisterende dubletter for at undgå crashet
+                    st.session_state.df = st.session_state.df.drop_duplicates('MATCH_KEY')
                     
                     existing = st.session_state.df.set_index('MATCH_KEY')
                     incoming = new_data.set_index('MATCH_KEY')
                     
-                    # Opdater kun tekniske kolonner hvis de findes
-                    cols_to_upd = [c for c in incoming.columns if c in ['Product Count', 'EPC (nøgletal)', 'Status']]
-                    if cols_to_upd: existing.update(incoming[cols_to_upd])
+                    # Opdater kun tal og status
+                    cols_to_upd = [c for c in incoming.columns if c in ['Product Count', 'EPC (nøgletal)', 'Status', 'Kategori', 'Website']]
+                    existing.update(incoming[cols_to_upd])
                     
+                    # Flet resten
                     st.session_state.df = existing.combine_first(incoming).reset_index()
                 
                 save_data(st.session_state.df)
                 st.rerun()
 
-    # --- KOLONNE STYRING (Dette var væk før!) ---
+    # --- KOLONNE VISNING ---
     if not st.session_state.df.empty:
         st.markdown("---")
-        st.header("👁️ Kolonne Visning")
+        st.header("👁️ Visning")
         alle_cols = [c for c in list(st.session_state.df.columns) if c != 'MATCH_KEY']
-        
-        # Sæt en standard rækkefølge
-        prioriteret = ['Land', 'Merchant', 'Kategori', 'Status', 'Product Count', 'EPC (nøgletal)', 'Mail', 'Kontaktet']
-        start_cols = [c for c in prioriteret if c in alle_cols] + [c for c in alle_cols if c not in prioriteret]
-        
-        valgte_kolonner = st.multiselect("Vælg/Rækkefølge:", alle_cols, default=start_cols)
+        order = ['Merchant', 'Website', 'Kategori', 'Status', 'Product Count', 'EPC (nøgletal)', 'Mail', 'Kontaktet']
+        default_order = [c for c in order if c in alle_cols] + [c for c in alle_cols if c not in order]
+        valgte_cols = st.multiselect("Vælg rækkefølge:", alle_cols, default=default_order)
 
-# --- CRM HOVEDTABEL ---
+# --- HOVEDVINDUE ---
 if not st.session_state.df.empty:
-    search = st.text_input("🔍 Søg i alt...", "")
+    search = st.text_input("🔍 Søg i CRM...", "")
     
     df_to_show = st.session_state.df.copy()
     if search:
         mask = df_to_show.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)
         df_to_show = df_to_show[mask]
 
-    # Brug de valgte kolonner fra sidebaren
-    if valgte_kolonner:
-        df_to_show = df_to_show[valgte_kolonner]
+    # Brug kun valgte kolonner
+    if valgte_cols:
+        df_to_show = df_to_show[valgte_cols]
 
-    st.write(f"Antal rækker: **{len(df_to_show)}**")
+    st.write(f"Antal unikke annoncører: **{len(df_to_show)}**")
 
-    # TABEL MED PINNED COLUMNS OG RIGTIG SORTERING
+    # EDITERBAR TABEL
+    # ColumnConfig sørger for rigtige typer til sortering
     edited_df = st.data_editor(
         df_to_show,
         column_config={
-            "Land": st.column_config.TextColumn("Land", width="small", pinned=True),
-            "Merchant": st.column_config.LinkColumn("Website", pinned=True),
+            "Merchant": st.column_config.TextColumn("Navn", pinned=True),
+            "Website": st.column_config.LinkColumn("Website", pinned=True),
             "Product Count": st.column_config.NumberColumn("Produkter", format="%d"),
             "EPC (nøgletal)": st.column_config.NumberColumn("EPC", format="%.2f"),
         },
         use_container_width=True,
         num_rows="dynamic",
         height=700,
-        key="crm_final_stable_v10"
+        key="crm_final_fixed_v11"
     )
 
     if not edited_df.equals(df_to_show):
         st.session_state.df.update(edited_df)
 else:
-    st.info("👋 Upload din fil for at starte.")
+    st.info("👋 Upload en fil for at starte dit CRM.")
