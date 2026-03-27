@@ -9,7 +9,7 @@ from datetime import datetime, date
 # --- 1. KONFIGURATION ---
 st.set_page_config(page_title="Affiliate CRM Master", layout="wide")
 
-# --- 2. DATABASE MOTOR ---
+# --- 2. DATABASE FORBINDELSE ---
 @st.cache_resource
 def get_engine():
     db_url = os.getenv("DATABASE_URL")
@@ -28,7 +28,7 @@ def get_engine():
 
 db_engine = get_engine()
 
-# --- 3. MASTER DEFINITIONER ---
+# --- 3. MASTER DEFINITIONER (1-26) ---
 MASTER_COLS = [
     'Date Added', 'Kategori', 'MID', 'Virksomhed', 'Website', 'Programnavn', 
     'Produkter', 'Segment', 'Salgs % (sats)', 'EPC', 'Lead/Fast (sats)', 
@@ -36,10 +36,10 @@ MASTER_COLS = [
     'Aff. status', 'Kontakt dato', 'Network', 'Land', 'Ticketnr', 'Dialog', 'Opflg. dato', 'Noter'
 ]
 
-# --- 4. DROPDOWN LOGIK (FIXET: MISTER ALDRIG VALG) ---
+# --- 4. DROPDOWN LOGIK (FORSTÆRKET) ---
 def load_options():
-    # Dine faste standardvalg
-    defaults = {
+    # Disse valg er ALTID til stede
+    opts = {
         "aff_status": ["Godkendt", "Afvist", "Ikke ansøgt", "Lukket ned", "Afventer", "Pause"],
         "networks": ["Partner-ads", "addrevenue", "Adtraction", "Tradetracker", "Awin", "GJ", "Daisycon", "Shopnello", "TradeDoubler", "Webigans"],
         "lands": ["DK", "SE", "NO", "FI", "ES", "DE", "UK", "US", "NL"],
@@ -47,13 +47,14 @@ def load_options():
     }
     if db_engine:
         try:
-            df_opt = pd.read_sql("SELECT * FROM settings", db_engine)
-            for key in defaults.keys():
-                stored = df_opt[df_opt['type'] == key]['value'].tolist()
-                # Vi lægger gemte ting sammen med defaults og fjerner dubletter
-                defaults[key] = sorted(list(set(defaults[key] + stored)))
+            df_s = pd.read_sql("SELECT * FROM settings", db_engine)
+            for key in opts.keys():
+                stored = df_s[df_s['type'] == key]['value'].tolist()
+                # Tilføj gemte valg til de faste, fjern dubletter og sortér
+                combined = list(set(opts[key] + stored))
+                opts[key] = sorted(combined)
         except: pass
-    return defaults
+    return opts
 
 def add_dropdown_option(t, v):
     if db_engine and v:
@@ -64,15 +65,19 @@ def add_dropdown_option(t, v):
 # --- 5. RENSE- OG REPARATIONS-MOTOR ---
 def robust_repair(df):
     if df.empty: return pd.DataFrame(columns=MASTER_COLS)
-    # Fjern dublerede kolonner (Vigtigst for stabilitet)
+    # Fjern fysiske dubletter af kolonner (Løser ValueError)
     df = df.loc[:, ~df.columns.duplicated()].copy()
-    # Map navne
-    ren = {'Merchant': 'Virksomhed', 'Programnavn': 'Virksomhed', 'Product Count': 'Produkter', 'EPC (nøgletal)': 'EPC', 'Status': 'Aff. status', 'Dato': 'Kontakt dato', 'Aff. Status': 'Aff. status'}
+    # Omdøb kendte navne
+    ren = {
+        'Merchant': 'Virksomhed', 'Programnavn': 'Virksomhed', 
+        'Product Count': 'Produkter', 'EPC (nøgletal)': 'EPC', 
+        'Status': 'Aff. status', 'Dato': 'Kontakt dato', 'Aff. Status': 'Aff. status'
+    }
     df = df.rename(columns=ren)
     df = df.loc[:, ~df.columns.duplicated()].copy()
     # Rens indhold
-    df = df.astype(str).replace(['NaT', 'nan', 'None', '00:00:00'], '')
-    # Tving master struktur
+    df = df.astype(str).replace(['NaT', 'nan', 'None', '00:00:00', 'nan.0'], '')
+    # Tving rækkefølge
     return df.reindex(columns=MASTER_COLS, fill_value="")
 
 def save_to_db(df):
@@ -84,7 +89,7 @@ def save_to_db(df):
         return True
     return False
 
-# --- 6. INITIALISERING ---
+# --- 6. DATA INITIALISERING ---
 if 'df' not in st.session_state:
     try:
         st.session_state.df = pd.read_sql("SELECT * FROM merchants", db_engine)
@@ -95,7 +100,7 @@ st.session_state.df = robust_repair(st.session_state.df)
 opts = load_options()
 
 # --- 7. POP-UP KLIENT KORT ---
-@st.dialog("📝 Klient-kort / Detaljer", width="large")
+@st.dialog("📝 Klient Detaljer", width="large")
 def client_popup(idx):
     row = st.session_state.df.loc[idx].to_dict()
     st.title(f"🏢 {row.get('Virksomhed')}")
@@ -108,14 +113,13 @@ def client_popup(idx):
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("##### 📞 Kontakt")
-            for f in ['Fornavn', 'Efternavn', 'Mail', 'Tlf', 'Website']: upd[f] = st.text_input(f, value=row.get(f,''))
+            for f in ['Fornavn', 'Efternavn', 'Mail', 'Tlf', 'Website']: 
+                upd[f] = st.text_input(f, value=row.get(f,''))
         with c2:
             st.markdown("##### ⚙️ Pipeline")
-            # DIALOG STATUS
             d_val = row.get('Dialog', 'Ikke kontakte')
             upd['Dialog'] = st.selectbox("Dialog Status", opts['dialogs'], index=opts['dialogs'].index(d_val) if d_val in opts['dialogs'] else 0)
             upd['Ticketnr'] = st.text_input("Ticket #", value=row.get('Ticketnr',''))
-            
             def sd(v):
                 try: return pd.to_datetime(v, dayfirst=True).date()
                 except: return date.today()
@@ -123,11 +127,10 @@ def client_popup(idx):
             upd['Kontakt dato'] = st.date_input("Kontakt dato", value=sd(row.get('Kontakt dato'))).strftime('%d/%m/%Y')
         with c3:
             st.markdown("##### 📈 Aff. Info")
-            # AFF STATUS (FIXET)
             a_val = row.get('Aff. status', 'Ikke ansøgt')
             upd['Aff. status'] = st.selectbox("Aff. status", opts['aff_status'], index=opts['aff_status'].index(a_val) if a_val in opts['aff_status'] else 0)
-            
             upd['Kategori'] = st.text_input("Hovedkategori", value=row.get('Kategori',''))
+            upd['MID'] = st.text_input("MID", value=row.get('MID',''))
             upd['Produkter'] = st.text_input("Produkter", value=row.get('Produkter',''))
             upd['EPC'] = st.text_input("EPC", value=row.get('EPC',''))
 
@@ -158,6 +161,32 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Eksport")
-    st.download_button("📥 Master Export", st.session_state.df.to_csv(index=False), "master.csv", use_container_width=True)
+    st.download_button("📥 Master CSV", st.session_state.df.to_csv(index=False), "master.csv", use_container_width=True)
     if 'sel_rows' in st.session_state and len(st.session_state.sel_rows) > 0:
-        st.download_button("📥 Download UDVALGTE", st.session_state.df.iloc[st.ses
+        csv_sel = st.session_state.df.iloc[st.session_state.sel_rows].to_csv(index=False)
+        st.download_button("📥 Download UDVALGTE", csv_sel, "udvalgte.csv", use_container_width=True, type="primary")
+
+    st.divider()
+    st.subheader("Import")
+    kat_up = st.text_input("Kategori:", "Bolig")
+    f_up = st.file_uploader("Flet ny fil")
+    if f_up and st.button("Flet & Gem"):
+        nd = pd.read_csv(f_up) if f_up.name.endswith('csv') else pd.read_excel(f_up)
+        st.session_state.df = robust_repair(pd.concat([st.session_state.df, nd], ignore_index=True))
+        save_to_db(st.session_state.df)
+        st.rerun()
+
+# --- 9. HOVEDVISNING ---
+st.title("💼 CRM Master Workspace")
+search = st.text_input("🔍 Søg i CRM...", "")
+df_v = st.session_state.df.copy()
+if search:
+    df_v = df_v[df_v.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
+
+sel = st.dataframe(df_v, use_container_width=True, selection_mode="multi-row", on_select="rerun", height=600)
+st.session_state.sel_rows = sel.selection.rows
+
+if len(st.session_state.sel_rows) == 1:
+    real_idx = df_v.index[st.session_state.sel_rows[0]]
+    if st.button(f"✏️ Åbn kort for {df_v.loc[real_idx, 'Virksomhed']}", type="primary"):
+        client_popup(real_idx)
