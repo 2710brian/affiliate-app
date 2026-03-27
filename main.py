@@ -10,7 +10,7 @@ import base64
 # --- 1. KONFIGURATION ---
 st.set_page_config(page_title="Affiliate CRM Master", layout="wide")
 
-# ADGANGSKODE (LÅS)
+# ADGANGSKODE
 correct_pw = os.getenv("APP_PASSWORD", "mgm2024")
 
 if "auth" not in st.session_state:
@@ -77,7 +77,21 @@ def add_dropdown_option(t, v):
             conn.execute(text("INSERT INTO settings (type, value) VALUES (:t, :v)"), {"t":t, "v":v})
             conn.commit()
 
-# --- 5. RENSE- OG MERGE MOTOR ---
+# --- 5. RENSE- OG DATO-MOTOR ---
+def get_safe_date_for_picker(val):
+    """Sikrer at kalenderen aldrig modtager NaT. Returnerer dags dato som fallback."""
+    if not val or pd.isna(val) or str(val).lower() in ['nat', 'nan', 'none', '', '00:00:00']:
+        return date.today()
+    try:
+        # Prøv at konvertere til datetime
+        dt = pd.to_datetime(val, dayfirst=True, errors='coerce')
+        # Hvis resultatet er NaT (not a time), returner dags dato
+        if pd.isna(dt):
+            return date.today()
+        return dt.date()
+    except:
+        return date.today()
+
 def robust_repair(df):
     if df.empty: return pd.DataFrame(columns=MASTER_COLS)
     df = df.loc[:, ~df.columns.duplicated()].copy()
@@ -105,7 +119,7 @@ if 'df' not in st.session_state:
 st.session_state.df = robust_repair(st.session_state.df)
 opts = load_options()
 
-# --- 6. DET STORE KLIENT KORT (POP-UP) ---
+# --- 6. KLIENT KORT POP-UP ---
 @st.dialog("📝 Klient Detaljer & CRM", width="large")
 def client_popup(idx):
     row = st.session_state.df.loc[idx].to_dict()
@@ -115,13 +129,7 @@ def client_popup(idx):
     t1, t2 = st.tabs(["📊 Stamdata & Pipeline", "📓 Noter & Vedhæftninger"])
     upd = {}
 
-    # Hjælpefunktion til sikker dato
-    def sd(v):
-        try: return pd.to_datetime(v, dayfirst=True).date()
-        except: return date.today()
-
     with t1:
-        # SEKTION 1: KONTAKT, PIPELINE, INFO
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown("##### 📞 Kontakt")
@@ -133,9 +141,9 @@ def client_popup(idx):
             upd['Dialog'] = st.selectbox("Dialog Status", opts['dialogs'], index=opts['dialogs'].index(d_val) if d_val in opts['dialogs'] else 0)
             upd['Ticketnr'] = st.text_input("Ticket #", value=row.get('Ticketnr', ''))
             
-            # DATOER MED KALENDER
-            upd['Opflg. dato'] = st.date_input("Næste opfølgning", value=sd(row.get('Opflg. dato'))).strftime('%d/%m/%Y')
-            upd['Kontakt dato'] = st.date_input("Kontakt dato", value=sd(row.get('Kontakt dato'))).strftime('%d/%m/%Y')
+            # HER ER FIXET: Alle datoer kører gennem den nye 'get_safe_date_for_picker'
+            upd['Opflg. dato'] = st.date_input("Næste opfølgning", value=get_safe_date_for_picker(row.get('Opflg. dato'))).strftime('%d/%m/%Y')
+            upd['Kontakt dato'] = st.date_input("Kontakt dato", value=get_safe_date_for_picker(row.get('Kontakt dato'))).strftime('%d/%m/%Y')
         with c3:
             st.markdown("##### 📈 Info")
             a_val = row.get('Aff. status', 'Ikke ansøgt')
@@ -146,12 +154,11 @@ def client_popup(idx):
             upd['EPC'] = st.text_input("EPC", value=row.get('EPC', ''))
 
         st.divider()
-        # SEKTION 2: TEKNISKE SYSTEMDATA
         st.markdown("##### 📊 Tekniske Systemdata")
         ca, cb, cc = st.columns(3)
         with ca:
-            # NU MED KALENDERMODUL:
-            upd['Date Added'] = st.date_input("Dato tilføjet", value=sd(row.get('Date Added'))).strftime('%d/%m/%Y')
+            # FIX: Også Date Added har fået kalender og sikkerhedstjek
+            upd['Date Added'] = st.date_input("Dato tilføjet", value=get_safe_date_for_picker(row.get('Date Added'))).strftime('%d/%m/%Y')
             upd['Programnavn'] = st.text_input("Programnavn (Original)", value=row.get('Programnavn', ''))
         with cb:
             upd['Segment'] = st.text_input("Segment", value=row.get('Segment', ''))
@@ -164,25 +171,20 @@ def client_popup(idx):
             upd['Feed?'] = st.text_input("Feed?", value=row.get('Feed?', ''))
 
     with t2:
-        st.markdown("##### 📓 Klient Noter")
         upd['Noter'] = st.text_area("Skriv logbog her...", value=row.get('Noter', ''), height=300)
-        
         st.divider()
-        st.markdown("##### 📎 Vedhæftede filer")
         if row.get('Fil_Navn'):
             st.info(f"📂 Aktuel fil: {row['Fil_Navn']}")
             if row.get('Fil_Data'):
                 b64 = row['Fil_Data']
-                href = f'<a href="data:application/octet-stream;base64,{b64}" download="{row["Fil_Navn"]}">👉 Download/Se nuværende fil</a>'
+                href = f'<a href="data:application/octet-stream;base64,{b64}" download="{row["Fil_Navn"]}">👉 Download fil</a>'
                 st.markdown(href, unsafe_allow_html=True)
-        
-        up = st.file_uploader("Upload ny fil (Billede, PDF, Lyd, Video)", key=f"f_{idx}")
+        up = st.file_uploader("Upload ny fil", key=f"f_{idx}")
         if up:
             upd['Fil_Navn'] = up.name
             upd['Fil_Data'] = base64.b64encode(up.read()).decode()
-            st.success("Fil klar til at blive gemt!")
 
-    if st.button("💾 GEM ALLE ÆNDRINGER PÅ KLIENT", type="primary", use_container_width=True):
+    if st.button("💾 GEM KLIENT DATA", type="primary", use_container_width=True):
         for k,v in upd.items(): st.session_state.df.at[idx, k] = v
         if save_to_db(st.session_state.df): st.rerun()
 
@@ -224,13 +226,9 @@ df_v = st.session_state.df.copy()
 if search:
     df_v = df_v[df_v.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
 
-view_cols = [c for c in df_v.columns if c != 'Fil_Data']
 sel = st.dataframe(
-    df_v[view_cols], 
-    use_container_width=True, 
-    selection_mode="single-row", 
-    on_select="rerun", 
-    height=600,
+    df_v[[c for c in df_v.columns if c != 'Fil_Data']], 
+    use_container_width=True, selection_mode="single-row", on_select="rerun", height=600,
     column_config={"Website": st.column_config.LinkColumn("Website")}
 )
 
