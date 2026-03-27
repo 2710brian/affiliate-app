@@ -10,7 +10,7 @@ from datetime import datetime, date
 # --- 1. KONFIGURATION ---
 st.set_page_config(page_title="Affiliate CRM Master", layout="wide", page_icon="💼")
 
-# Hjælpefunktion til at læse billeder fra GitHub mappen
+# Funktion til at læse billeder
 def get_base64(bin_file):
     if os.path.exists(bin_file):
         with open(bin_file, 'rb') as f:
@@ -18,7 +18,7 @@ def get_base64(bin_file):
         return base64.b64encode(data).decode()
     return None
 
-# --- 2. DATABASE FORBINDELSE ---
+# --- 2. DATABASE MOTOR ---
 def get_engine():
     db_url = os.getenv("DATABASE_URL")
     if db_url:
@@ -42,64 +42,63 @@ def get_engine():
 
 db_engine = get_engine()
 
-# --- 3. LOGIN & DESIGN (MED LOGO OG BAGGRUND) ---
+# --- 3. LOGIN LOGIK (TOP LEVEL) ---
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    bg_base64 = get_base64("background.png")
-    logo_base64 = get_base64("applogo.png") # Rettet til dit nye filnavn
+    # DESIGN FOR LOGIN
+    bg_b64 = get_base64("background.png")
+    logo_b64 = get_base64("applogo.png")
     
-    bg_style = f"""
-    <style>
-    .stApp {{
-        background-image: url("data:image/png;base64,{bg_base64 if bg_base64 else ''}");
-        background-size: cover;
-        background-position: center;
-    }}
-    .login-container {{
-        background-color: rgba(255, 255, 255, 0.95);
-        padding: 50px;
-        border-radius: 20px;
-        box-shadow: 0 15px 35px rgba(0,0,0,0.3);
-        max-width: 450px;
-        margin: 100px auto;
-        text-align: center;
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255,255,255,0.3);
-    }}
-    .hero-title {{ color: #1e3a8a; font-family: 'Segoe UI', sans-serif; font-weight: 800; margin-top: 10px; }}
-    </style>
-    """
-    st.markdown(bg_style, unsafe_allow_html=True)
+    st.markdown(f"""
+        <style>
+        .stApp {{
+            background-image: url("data:image/png;base64,{bg_b64 if bg_b64 else ''}");
+            background-size: cover;
+            background-position: center;
+        }}
+        .login-card {{
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 40px;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+            max-width: 400px;
+            margin: 150px auto;
+            text-align: center;
+        }}
+        .corner-logo {{
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 150px;
+            z-index: 1000;
+        }}
+        </style>
+        <div class="login-card">
+            <h2 style="color: #1e3a8a;">CRM Master Login</h2>
+            <p style="color: #64748b;">Marketing Group Malaga</p>
+        </div>
+        {"<img src='data:image/png;base64," + logo_b64 + "' class='corner-logo'>" if logo_b64 else ""}
+    """, unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([1, 1.5, 1])
-    with col2:
-        st.markdown("<div class='login-container'>", unsafe_allow_html=True)
-        
-        if logo_base64:
-            st.markdown(f'<img src="data:image/png;base64,{logo_base64}" width="200">', unsafe_allow_html=True)
-        
-        st.markdown("<h2 class='hero-title'>CRM Master</h2>", unsafe_allow_html=True)
-        st.write("Marketing Group Malaga - Workspace")
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        u_in = st.text_input("Brugernavn")
-        p_in = st.text_input("Adgangskode", type="password")
-        
+    # Input felter uden for CSS blokken
+    _, col, _ = st.columns([1, 1, 1])
+    with col:
+        u_input = st.text_input("Brugernavn", key="u_name")
+        p_input = st.text_input("Adgangskode", type="password", key="p_name")
         if st.button("Start Arbejdsdag", use_container_width=True, type="primary"):
             if db_engine:
                 with db_engine.connect() as conn:
-                    res = conn.execute(text("SELECT password FROM users WHERE username = :u"), {"u": u_in}).fetchone()
-                    if res and res[0] == p_in:
+                    res = conn.execute(text("SELECT password FROM users WHERE username = :u"), {"u": u_input}).fetchone()
+                    if res and res[0] == p_input:
                         st.session_state.authenticated = True
-                        st.session_state.current_user = u_in
                         st.rerun()
-                    else: st.error("❌ Ugyldigt login")
-        st.markdown("</div>", unsafe_allow_html=True)
+                    else: st.error("❌ Forkert login")
     st.stop()
 
-# --- 4. CRM MASTER DATA ---
+# --- 4. CRM MASTER (KUN HVIS LOGGET IND) ---
+
 MASTER_COLS = [
     'Date Added', 'Kategori', 'MID', 'Virksomhed', 'Website', 'Programnavn', 
     'Produkter', 'Segment', 'Salgs % (sats)', 'EPC', 'Lead/Fast (sats)', 
@@ -142,7 +141,7 @@ def save_db(df):
         return True
     return False
 
-# --- 5. INITIALISERING ---
+# Data
 if 'df' not in st.session_state:
     if db_engine:
         try: st.session_state.df = pd.read_sql("SELECT * FROM merchants", db_engine)
@@ -156,7 +155,6 @@ opts = load_options()
 def client_popup(idx):
     row = st.session_state.df.loc[idx].to_dict()
     st.title(f"🏢 {row.get('Virksomhed')}")
-    st.divider()
     t1, t2 = st.tabs(["📊 Stamdata & Pipeline", "📓 Noter & Filer"])
     upd = {}
     with t1:
@@ -166,7 +164,7 @@ def client_popup(idx):
             for f in ['Fornavn', 'Efternavn', 'Mail', 'Tlf', 'Website']: upd[f] = st.text_input(f, value=row.get(f,''))
         with c2:
             st.markdown("##### ⚙️ Pipeline")
-            upd['Dialog'] = st.selectbox("Dialog Status", opts['dialogs'], index=opts['dialogs'].index(row.get('Dialog')) if row.get('Dialog') in opts['dialogs'] else 0)
+            upd['Dialog'] = st.selectbox("Dialog", opts['dialogs'], index=opts['dialogs'].index(row.get('Dialog')) if row.get('Dialog') in opts['dialogs'] else 0)
             upd['Ticketnr'] = st.text_input("Ticket #", value=row.get('Ticketnr',''))
             def sd(v):
                 try: return pd.to_datetime(v, dayfirst=True).date()
@@ -176,26 +174,20 @@ def client_popup(idx):
         with c3:
             st.markdown("##### 📈 Info")
             upd['Aff. status'] = st.selectbox("Aff. status", opts['aff_status'], index=opts['aff_status'].index(row.get('Aff. status')) if row.get('Aff. status') in opts['aff_status'] else 0)
-            upd['Kategori'] = st.text_input("Kategori", value=row.get('Kategori',''))
+            upd['Kategori'] = st.text_input("Hovedkategori", value=row.get('Kategori',''))
             upd['MID'] = st.text_input("MID", value=row.get('MID',''))
             upd['Produkter'] = st.text_input("Produkter", value=row.get('Produkter',''))
             upd['EPC'] = st.text_input("EPC", value=row.get('EPC',''))
         st.divider()
         ca, cb, cc = st.columns(3)
         with ca: upd['Date Added'] = st.date_input("Dato tilføjet", value=sd(row.get('Date Added'))).strftime('%d/%m/%Y')
-        with cb: 
-            for f in ['Segment', 'Salgs % (sats)', 'Lead/Fast (sats)']: upd[f] = st.text_input(f, value=row.get(f,''))
+        with cb: upd['Segment'] = st.text_input("Segment", value=row.get('Segment',''))
         with cc:
             upd['Network'] = st.selectbox("Netværk", opts['networks'], index=opts['networks'].index(row.get('Network')) if row.get('Network') in opts['networks'] else 0)
             upd['Land'] = st.selectbox("Land", opts['lands'], index=opts['lands'].index(row.get('Land')) if row.get('Land') in opts['lands'] else 0)
-            upd['Trafik'] = st.text_input("Trafik", value=row.get('Trafik', ''))
 
     with t2:
         upd['Noter'] = st.text_area("📓 Klient Logbog", value=row.get('Noter',''), height=300)
-        if row.get('Fil_Navn'):
-            st.info(f"📂 Fil: {row['Fil_Navn']}")
-            if row.get('Fil_Data'):
-                st.markdown(f'<a href="data:application/octet-stream;base64,{row["Fil_Data"]}" download="{row["Fil_Navn"]}">Hent fil</a>', unsafe_allow_html=True)
         up = st.file_uploader("Vedhæft fil", key=f"f_{idx}")
         if up:
             upd['Fil_Navn'] = up.name
@@ -205,38 +197,34 @@ def client_popup(idx):
         for k,v in upd.items(): st.session_state.df.at[idx, k] = v
         if save_db(st.session_state.df): st.rerun()
 
-# --- 6. WORKSPACE SIDEBAR ---
+# Sidebar
 with st.sidebar:
-    st.header("⚙️ Kontrol Center")
+    st.header("⚙️ CRM Kontrol")
     with st.expander("👤 Admin & Dropdowns"):
         t_sel = st.selectbox("Type:", ["networks", "lands", "aff_status"])
         v_new = st.text_input("Nyt valg:")
         if st.button("Tilføj") and v_new: add_option(t_sel, v_new); st.rerun()
         st.divider()
         nu, np = st.text_input("Ny Bruger:"), st.text_input("Ny Kode:", type="password")
-        if st.button("Opret Bruger") and nu and np:
+        if st.button("Opret") and nu and np:
             with db_engine.connect() as conn: conn.execute(text("INSERT INTO users VALUES (:u,:p)"), {"u":nu,"p":np}); conn.commit()
-            st.success("Bruger oprettet")
-    
+            st.success("Oprettet")
     st.divider()
     st.download_button("📥 Master Export", st.session_state.df.to_csv(index=False), "master.csv", use_container_width=True)
     if 'sel_rows' in st.session_state and len(st.session_state.sel_rows) > 0:
         st.download_button("📥 Download VALGTE", st.session_state.df.iloc[st.session_state.sel_rows].to_csv(index=False), "udvalgte.csv", use_container_width=True, type="primary")
-
     st.divider()
     f_up = st.file_uploader("Flet ny fil")
     if f_up and st.button("Flet & Gem"):
         nd = pd.read_csv(f_up) if f_up.name.endswith('csv') else pd.read_excel(f_up)
         st.session_state.df = force_clean(pd.concat([st.session_state.df, nd], ignore_index=True))
         save_db(st.session_state.df); st.rerun()
-
     if st.button("🚪 Log ud"):
         st.session_state.authenticated = False
         st.rerun()
 
-# --- 7. MAIN CRM ---
 st.title("💼 CRM Master Workspace")
-search = st.text_input("🔍 Søg i alt data...", "")
+search = st.text_input("🔍 Søg...")
 df_v = st.session_state.df.copy()
 if search: df_v = df_v[df_v.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
 
