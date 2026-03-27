@@ -4,20 +4,11 @@ import os
 import re
 import sqlalchemy
 from sqlalchemy import create_engine, text
-import base64
 from datetime import datetime, date
+import base64
 
-# --- 1. INITIALISERING & DESIGN (SKAL KØRE FØRST) ---
-st.set_page_config(page_title="Affiliate CRM Master Pro", layout="wide", page_icon="💼")
-
-def get_base64(bin_file):
-    if os.path.exists(bin_file):
-        with open(bin_file, 'rb') as f:
-            return base64.b64encode(f.read()).decode()
-    return ""
-
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
+# --- 1. KONFIGURATION ---
+st.set_page_config(page_title="CRM Master", layout="wide")
 
 # --- 2. DATABASE FORBINDELSE ---
 @st.cache_resource
@@ -34,8 +25,7 @@ def get_engine():
                 conn.execute(text("CREATE TABLE IF NOT EXISTS settings (type TEXT, value TEXT)"))
                 res = conn.execute(text("SELECT COUNT(*) FROM users")).fetchone()
                 if res[0] == 0:
-                    u, p = os.getenv("APP_USER", "admin"), os.getenv("APP_PASSWORD", "admin123")
-                    conn.execute(text("INSERT INTO users (username, password) VALUES (:u, :p)"), {"u": u, "p": p})
+                    conn.execute(text("INSERT INTO users (username, password) VALUES ('admin', 'admin123')"))
                 conn.commit()
             return engine
         except: return None
@@ -43,45 +33,35 @@ def get_engine():
 
 db_engine = get_engine()
 
-# --- 3. LOGIN FUNKTION (CALLBACK FIXER KNAPPEN) ---
-def check_login():
-    u_in = st.session_state.get("login_user")
-    p_in = st.session_state.get("login_pass")
-    rail_u, rail_p = os.getenv("APP_USER", "admin"), os.getenv("APP_PASSWORD", "admin123")
-    
-    if u_in == rail_u and p_in == rail_p:
-        st.session_state.authenticated = True
-    elif db_engine:
-        with db_engine.connect() as conn:
-            res = conn.execute(text("SELECT password FROM users WHERE username = :u"), {"u": u_in}).fetchone()
-            if res and res[0] == p_in:
-                st.session_state.authenticated = True
-            else: st.error("❌ Login fejlede")
+# --- 3. LOGIN SYSTEM ---
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
 
-# --- 4. VIS LOGIN ELLER CRM ---
 if not st.session_state.authenticated:
-    bg = get_base64("background.png")
-    logo = get_base64("applogo.png")
-    st.markdown(f"""
-        <style>
-        .stApp {{ background: url("data:image/png;base64,{bg}") no-repeat center center fixed; background-size: cover; }}
-        .login-box {{ background: rgba(255,255,255,0.9); padding: 40px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); text-align: center; width: 400px; margin: 100px auto; }}
-        .logo-corner {{ position: fixed; bottom: 20px; right: 20px; width: 160px; z-index: 1000; }}
-        </style>
-    """, unsafe_allow_html=True)
-    if logo: st.markdown(f'<img src="data:image/png;base64,{logo}" class="logo-corner">', unsafe_allow_html=True)
+    st.title("💼 Affiliate CRM Master")
+    st.write("Log ind for at starte arbejdsdagen")
     
-    _, col, _ = st.columns([1, 1.2, 1])
-    with col:
-        st.markdown("<div class='login-box'>", unsafe_allow_html=True)
-        st.subheader("💼 CRM MASTER LOGIN")
-        st.text_input("Brugernavn", key="login_user")
-        st.text_input("Adgangskode", type="password", key="login_pass")
-        st.button("START ARBEJDSDAG", type="primary", use_container_width=True, on_click=check_login)
-        st.markdown("</div>", unsafe_allow_html=True)
+    u_in = st.text_input("Brugernavn")
+    p_in = st.text_input("Adgangskode", type="password")
+    
+    if st.button("Log ind", type="primary"):
+        rail_u = os.getenv("APP_USER", "admin")
+        rail_p = os.getenv("APP_PASSWORD", "admin123")
+        
+        if u_in == rail_u and p_in == rail_p:
+            st.session_state.authenticated = True
+            st.rerun()
+        elif db_engine:
+            with db_engine.connect() as conn:
+                res = conn.execute(text("SELECT password FROM users WHERE username = :u"), {"u": u_in}).fetchone()
+                if res and res[0] == p_in:
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Ugyldigt login")
     st.stop()
 
-# --- 5. CRM SYSTEM (HERFRA ER ALT DATA-LOGIK) ---
+# --- 4. CRM MASTER DEFINITIONER ---
 MASTER_COLS = [
     'Date Added', 'Kategori', 'MID', 'Virksomhed', 'Website', 'Programnavn', 
     'Produkter', 'Segment', 'Salgs % (sats)', 'EPC', 'Lead/Fast (sats)', 
@@ -91,10 +71,10 @@ MASTER_COLS = [
 
 def load_options():
     opts = {
-        "networks": ["Partner-ads", "addrevenue", "Adtraction", "Awin", "Tradetracker"],
-        "lands": ["DK", "SE", "NO", "FI", "ES", "DE", "UK"],
-        "aff_status": ["Godkendt", "Ikke ansøgt", "Afvist", "Afventer"],
-        "dialogs": ["Ikke kontakte", "Affiliate Audit", "Dialog i gang", "Oplæg sendt", "Infomail sendt", "Kontaktet", "Vundet", "Tabt", "Call"]
+        "networks": ["Partner-ads", "addrevenue", "Adtraction", "Awin", "Tradetracker", "GJ", "Daisycon", "Shopnello", "TradeDoubler", "Webigans"],
+        "lands": ["DK", "SE", "NO", "FI", "ES", "DE", "UK", "US", "NL"],
+        "aff_status": ["Godkendt", "Ikke ansøgt", "Afvist", "Afventer", "Pause"],
+        "dialogs": ["Ikke kontakte", "Affiliate Audit", "Dialog i gang", "Oplæg sendt", "Infomail sendt", "Cold Mail", "Nystartet", "Kontaktet", "Mediebureau", "Vundet", "Tabt", "Følg op 1 mdr", "Følg op 3 mdr", "Følg op 6 mdr", "Droppet", "Call"]
     }
     if db_engine:
         try:
@@ -113,11 +93,17 @@ def add_option(t, v):
 
 def force_clean(df):
     if df.empty: return pd.DataFrame(columns=MASTER_COLS)
-    rename = {'Merchant': 'Virksomhed', 'Programnavn': 'Virksomhed', 'Product Count': 'Produkter', 'EPC (nøgletal)': 'EPC', 'Status': 'Aff. status', 'Dato': 'Kontakt dato', 'Aff. Status': 'Aff. status'}
-    df = df.rename(columns=rename).loc[:, ~df.columns.duplicated()]
+    rename_map = {'Merchant': 'Virksomhed', 'Programnavn': 'Virksomhed', 'Product Count': 'Produkter', 'EPC (nøgletal)': 'EPC', 'Status': 'Aff. status', 'Dato': 'Kontakt dato', 'Aff. Status': 'Aff. status'}
+    df = df.rename(columns=rename_map).loc[:, ~df.columns.duplicated()]
     df = df.astype(str).replace(['NaT', 'nan', 'None', '00:00:00'], '')
     if 'Virksomhed' in df.columns:
-        df['Website'] = df.apply(lambda r: f"https://www.{re.sub(r'[^a-z0-9]', '', str(r['Virksomhed']).lower())}.dk" if str(r.get('Website','')) == '' else r['Website'], axis=1)
+        def site_gen(r):
+            s, v = str(r.get('Website','')).strip(), str(r.get('Virksomhed','')).strip()
+            if (s == "" or s == "nan") and v != "":
+                c = re.sub(r'[^a-z0-9]', '', v.lower())
+                return f"https://www.{c}.dk" if c else ""
+            return s
+        df['Website'] = df.apply(site_gen, axis=1)
     return df.reindex(columns=MASTER_COLS, fill_value="")
 
 def save_db(df):
@@ -129,20 +115,21 @@ def save_db(df):
         return True
     return False
 
-# Indlæs data
+# --- DATA LOAD ---
 if 'df' not in st.session_state:
-    try: st.session_state.df = pd.read_sql("SELECT * FROM merchants", db_engine)
-    except: st.session_state.df = pd.DataFrame(columns=MASTER_COLS)
+    if db_engine:
+        try: st.session_state.df = pd.read_sql("SELECT * FROM merchants", db_engine)
+        except: st.session_state.df = pd.DataFrame(columns=MASTER_COLS)
 st.session_state.df = force_clean(st.session_state.df)
 opts = load_options()
 
-# --- 6. POP-UP KLIENT KORT ---
-@st.dialog("📝 Klient-kort / CRM Detaljer", width="large")
+# --- 5. POP-UP KLIENT KORT ---
+@st.dialog("📝 Klient Detaljer", width="large")
 def client_popup(idx):
     row = st.session_state.df.loc[idx].to_dict()
     st.title(f"🏢 {row.get('Virksomhed')}")
     st.divider()
-    t1, t2 = st.tabs(["📊 Stamdata & Pipeline", "📓 Noter & Dokumenter"])
+    t1, t2 = st.tabs(["📊 Stamdata & Pipeline", "📓 Noter & Filer"])
     upd = {}
     with t1:
         c1, c2, c3 = st.columns(3)
@@ -151,7 +138,7 @@ def client_popup(idx):
             for f in ['Fornavn', 'Efternavn', 'Mail', 'Tlf', 'Website']: upd[f] = st.text_input(f, value=row.get(f,''))
         with c2:
             st.markdown("##### ⚙️ Pipeline")
-            upd['Dialog'] = st.selectbox("Dialog Status", opts['dialogs'], index=opts['dialogs'].index(row.get('Dialog')) if row.get('Dialog') in opts['dialogs'] else 0)
+            upd['Dialog'] = st.selectbox("Dialog", opts['dialogs'], index=opts['dialogs'].index(row.get('Dialog')) if row.get('Dialog') in opts['dialogs'] else 0)
             upd['Ticketnr'] = st.text_input("Ticket #", value=row.get('Ticketnr',''))
             def sd(v):
                 try: return pd.to_datetime(v, dayfirst=True).date()
@@ -161,70 +148,70 @@ def client_popup(idx):
         with c3:
             st.markdown("##### 📈 Info")
             upd['Aff. status'] = st.selectbox("Aff. status", opts['aff_status'], index=opts['aff_status'].index(row.get('Aff. status')) if row.get('Aff. status') in opts['aff_status'] else 0)
-            upd['Kategori'] = st.text_input("Hovedkategori", value=row.get('Kategori',''))
+            upd['Kategori'] = st.text_input("Kategori", value=row.get('Kategori',''))
             upd['MID'] = st.text_input("MID", value=row.get('MID',''))
             upd['Produkter'] = st.text_input("Produkter", value=row.get('Produkter',''))
             upd['EPC'] = st.text_input("EPC", value=row.get('EPC',''))
         st.divider()
         ca, cb, cc = st.columns(3)
-        with ca: upd['Date Added'] = st.date_input("Dato tilføjet", value=sd(row.get('Date Added'))).strftime('%d/%m/%Y')
+        with ca: upd['Date Added'] = st.text_input("Dato tilføjet", value=row.get('Date Added',''))
         with cb: upd['Segment'] = st.text_input("Segment", value=row.get('Segment',''))
         with cc:
             upd['Network'] = st.selectbox("Netværk", opts['networks'], index=opts['networks'].index(row.get('Network')) if row.get('Network') in opts['networks'] else 0)
             upd['Land'] = st.selectbox("Land", opts['lands'], index=opts['lands'].index(row.get('Land')) if row.get('Land') in opts['lands'] else 0)
+    
     with t2:
-        upd['Noter'] = st.text_area("📓 Klient Logbog", value=row.get('Noter',''), height=300)
+        upd['Noter'] = st.text_area("📓 Interne Noter", value=row.get('Noter',''), height=300)
         if row.get('Fil_Navn'):
-            st.success(f"📂 Fil: {row['Fil_Navn']}")
+            st.info(f"Fil: {row['Fil_Navn']}")
             if row.get('Fil_Data'):
-                st.markdown(f'<a href="data:application/octet-stream;base64,{row["Fil_Data"]}" download="{row["Fil_Navn"]}">Hent fil</a>', unsafe_allow_html=True)
-        up = st.file_uploader("Vedhæft dokument", key=f"up_{idx}")
+                st.markdown(f'<a href="data:application/octet-stream;base64,{row["Fil_Data"]}" download="{row["Fil_Navn"]}">Download fil</a>', unsafe_allow_html=True)
+        up = st.file_uploader("Vedhæft fil", key=f"up_{idx}")
         if up:
             upd['Fil_Navn'], upd['Fil_Data'] = up.name, base64.b64encode(up.read()).decode()
 
-    if st.button("💾 GEM ALT PÅ KLIENT", type="primary", use_container_width=True):
+    if st.button("💾 GEM ÆNDRINGER", type="primary", use_container_width=True):
         for k,v in upd.items(): st.session_state.df.at[idx, k] = v
         if save_db(st.session_state.df): st.rerun()
 
-# --- 7. SIDEBAR ---
+# --- 6. SIDEBAR ---
 with st.sidebar:
-    st.header("⚙️ CRM Kontrol")
-    with st.expander("👤 Admin & Dropdowns"):
+    st.header("⚙️ Kontrol Center")
+    with st.expander("👤 Admin Panel"):
         t_sel = st.selectbox("Type:", ["networks", "lands", "aff_status", "dialogs"])
-        v_new = st.text_input("Nyt valg:")
+        v_new = st.text_input("Tilføj valg:")
         if st.button("Tilføj") and v_new: add_option(t_sel, v_new); st.rerun()
         st.divider()
         nu, np = st.text_input("Ny Bruger:"), st.text_input("Ny Kode:", type="password")
         if st.button("Opret Bruger") and nu and np:
             with db_engine.connect() as conn: conn.execute(text("INSERT INTO users VALUES (:u,:p)"), {"u":nu,"p":np}); conn.commit()
-            st.success("Oprettet")
+            st.success("Bruger oprettet")
     
     st.divider()
     st.download_button("📥 Master Export", st.session_state.df.to_csv(index=False), "master.csv", use_container_width=True)
-    if 'sel_idx' in st.session_state and len(st.session_state.sel_idx) > 0:
-        st.download_button("📥 Download VALGTE", st.session_state.df.iloc[st.session_state.sel_idx].to_csv(index=False), "udvalgte.csv", use_container_width=True, type="primary")
+    if 'sel_rows' in st.session_state and len(st.session_state.sel_rows) > 0:
+        st.download_button("📥 Download VALGTE", st.session_state.df.iloc[st.session_state.sel_rows].to_csv(index=False), "udvalgte.csv", use_container_width=True, type="primary")
 
     st.divider()
-    kat_up = st.text_input("Kategori v. import:", "Bolig")
     f_up = st.file_uploader("Flet ny fil")
-    if f_up and st.button("Flet & Gem"):
+    if f_up and st.button("Flet & Gem", use_container_width=True):
         nd = pd.read_csv(f_up) if f_up.name.endswith('csv') else pd.read_excel(f_up)
-        nd = force_clean(nd)
-        nd['Kategori'] = kat_up
         st.session_state.df = force_clean(pd.concat([st.session_state.df, nd], ignore_index=True))
         save_db(st.session_state.df); st.rerun()
+    
+    if st.button("🚪 Log ud"):
+        st.session_state.authenticated = False
+        st.rerun()
 
-    if st.button("🚪 Log ud"): st.session_state.authenticated = False; st.rerun()
-
-# --- 8. HOVEDVISNING ---
+# --- 7. MAIN CRM ---
 st.title("💼 CRM Master Workspace")
 search = st.text_input("🔍 Søg...")
 df_v = st.session_state.df.copy()
 if search: df_v = df_v[df_v.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
 
 sel = st.dataframe(df_v[[c for c in df_v.columns if c != 'Fil_Data']], column_config={"Website": st.column_config.LinkColumn("Website")}, use_container_width=True, selection_mode="multi-row", on_select="rerun", height=600)
-st.session_state.sel_idx = sel.selection.rows
+st.session_state.sel_rows = sel.selection.rows
 
-if len(st.session_state.sel_idx) == 1:
-    real_idx = df_v.index[st.session_state.sel_idx[0]]
+if len(st.session_state.sel_rows) == 1:
+    real_idx = df_v.index[st.session_state.sel_rows[0]]
     if st.button(f"✏️ Åbn kort for {df_v.loc[real_idx, 'Virksomhed']}", type="primary"): client_popup(real_idx)
