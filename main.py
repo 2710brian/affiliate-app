@@ -91,7 +91,6 @@ def save_to_db(df):
     if db_engine:
         df = robust_repair(df)
         df['MATCH_KEY'] = df['Virksomhed'].apply(lambda x: re.sub(r'[^a-z0-9]', '', str(x).lower()))
-        # Hvis Virksomhed er tom, prøv Programnavn
         df.loc[df['Virksomhed'] == '', 'MATCH_KEY'] = df['Programnavn'].apply(lambda x: re.sub(r'[^a-z0-9]', '', str(x).lower()))
         df = df.drop_duplicates('MATCH_KEY', keep='first').drop(columns=['MATCH_KEY'])
         df.to_sql('merchants', db_engine, if_exists='replace', index=False)
@@ -116,6 +115,11 @@ def client_popup(idx):
     t1, t2 = st.tabs(["📊 Stamdata & Pipeline", "📓 Noter & Vedhæftninger"])
     upd = {}
 
+    # Hjælpefunktion til sikker dato
+    def sd(v):
+        try: return pd.to_datetime(v, dayfirst=True).date()
+        except: return date.today()
+
     with t1:
         # SEKTION 1: KONTAKT, PIPELINE, INFO
         c1, c2, c3 = st.columns(3)
@@ -129,9 +133,7 @@ def client_popup(idx):
             upd['Dialog'] = st.selectbox("Dialog Status", opts['dialogs'], index=opts['dialogs'].index(d_val) if d_val in opts['dialogs'] else 0)
             upd['Ticketnr'] = st.text_input("Ticket #", value=row.get('Ticketnr', ''))
             
-            def sd(v):
-                try: return pd.to_datetime(v, dayfirst=True).date()
-                except: return date.today()
+            # DATOER MED KALENDER
             upd['Opflg. dato'] = st.date_input("Næste opfølgning", value=sd(row.get('Opflg. dato'))).strftime('%d/%m/%Y')
             upd['Kontakt dato'] = st.date_input("Kontakt dato", value=sd(row.get('Kontakt dato'))).strftime('%d/%m/%Y')
         with c3:
@@ -148,7 +150,8 @@ def client_popup(idx):
         st.markdown("##### 📊 Tekniske Systemdata")
         ca, cb, cc = st.columns(3)
         with ca:
-            upd['Date Added'] = st.text_input("Date Added", value=row.get('Date Added', ''))
+            # NU MED KALENDERMODUL:
+            upd['Date Added'] = st.date_input("Dato tilføjet", value=sd(row.get('Date Added'))).strftime('%d/%m/%Y')
             upd['Programnavn'] = st.text_input("Programnavn (Original)", value=row.get('Programnavn', ''))
         with cb:
             upd['Segment'] = st.text_input("Segment", value=row.get('Segment', ''))
@@ -206,7 +209,6 @@ with st.sidebar:
     f_up = st.file_uploader("Flet ny fil")
     if f_up and st.button("Flet & Gem"):
         nd = pd.read_csv(f_up) if f_up.name.endswith('csv') else pd.read_excel(f_up)
-        # Rens kolonnenavne i ny fil
         nd = nd.rename(columns={'Merchant': 'Virksomhed', 'Product Count': 'Produkter', 'EPC (nøgletal)': 'EPC', 'Aff. Status': 'Aff. status'})
         nd['Kategori'] = kat_up
         st.session_state.df = robust_repair(pd.concat([st.session_state.df, nd], ignore_index=True))
@@ -222,7 +224,6 @@ df_v = st.session_state.df.copy()
 if search:
     df_v = df_v[df_v.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
 
-# Vis tabel uden den tunge Fil_Data
 view_cols = [c for c in df_v.columns if c != 'Fil_Data']
 sel = st.dataframe(
     df_v[view_cols], 
