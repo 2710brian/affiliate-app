@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, text
 import base64
 from datetime import datetime, date
 
-# --- 1. KONFIGURATION ---
+# --- 1. KONFIGURATION (ABSOLUT TOP) ---
 st.set_page_config(page_title="Affiliate CRM Master", layout="wide", page_icon="💼")
 
 # Funktion til at læse billeder
@@ -42,12 +42,12 @@ def get_engine():
 
 db_engine = get_engine()
 
-# --- 3. LOGIN LOGIK (TOP LEVEL) ---
+# --- 3. LOGIN KONTROL ---
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
+# --- HVIS IKKE LOGGET IND: VIS FORSIDE ---
 if not st.session_state.authenticated:
-    # DESIGN FOR LOGIN
     bg_b64 = get_base64("background.png")
     logo_b64 = get_base64("applogo.png")
     
@@ -57,47 +57,55 @@ if not st.session_state.authenticated:
             background-image: url("data:image/png;base64,{bg_b64 if bg_b64 else ''}");
             background-size: cover;
             background-position: center;
+            background-attachment: fixed;
         }}
-        .login-card {{
-            background-color: rgba(255, 255, 255, 0.9);
-            padding: 40px;
-            border-radius: 15px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-            max-width: 400px;
-            margin: 150px auto;
-            text-align: center;
+        /* Fjern alle hvide kasser og gør det rent */
+        [data-testid="stForm"] {{
+            background-color: rgba(255, 255, 255, 0.8) !important;
+            border-radius: 15px !important;
+            padding: 30px !important;
+            border: none !important;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2) !important;
         }}
         .corner-logo {{
             position: fixed;
             bottom: 20px;
             right: 20px;
-            width: 150px;
+            width: 180px;
             z-index: 1000;
         }}
+        h1, h2, h3 {{
+            color: #1e3a8a !important;
+            text-align: center;
+        }}
         </style>
-        <div class="login-card">
-            <h2 style="color: #1e3a8a;">CRM Master Login</h2>
-            <p style="color: #64748b;">Marketing Group Malaga</p>
-        </div>
         {"<img src='data:image/png;base64," + logo_b64 + "' class='corner-logo'>" if logo_b64 else ""}
     """, unsafe_allow_html=True)
 
-    # Input felter uden for CSS blokken
+    st.markdown("<br><br><br>", unsafe_allow_html=True)
     _, col, _ = st.columns([1, 1, 1])
+    
     with col:
-        u_input = st.text_input("Brugernavn", key="u_name")
-        p_input = st.text_input("Adgangskode", type="password", key="p_name")
-        if st.button("Start Arbejdsdag", use_container_width=True, type="primary"):
-            if db_engine:
-                with db_engine.connect() as conn:
-                    res = conn.execute(text("SELECT password FROM users WHERE username = :u"), {"u": u_input}).fetchone()
-                    if res and res[0] == p_input:
-                        st.session_state.authenticated = True
-                        st.rerun()
-                    else: st.error("❌ Forkert login")
+        with st.form("login_direct"):
+            st.markdown("### CRM MASTER LOGIN")
+            u_in = st.text_input("Brugernavn")
+            p_in = st.text_input("Adgangskode", type="password")
+            submit = st.form_submit_button("Log ind nu", use_container_width=True)
+            
+            if submit:
+                if db_engine:
+                    with db_engine.connect() as conn:
+                        res = conn.execute(text("SELECT password FROM users WHERE username = :u"), {"u": u_in}).fetchone()
+                        if res and res[0] == p_in:
+                            st.session_state.authenticated = True
+                            st.rerun()
+                        else:
+                            st.error("Ugyldig adgangskode")
+                else:
+                    st.error("Database forbindelse mangler")
     st.stop()
 
-# --- 4. CRM MASTER (KUN HVIS LOGGET IND) ---
+# --- 4. CRM MASTER (KUN SYNLIG VED LOGIN) ---
 
 MASTER_COLS = [
     'Date Added', 'Kategori', 'MID', 'Virksomhed', 'Website', 'Programnavn', 
@@ -141,7 +149,7 @@ def save_db(df):
         return True
     return False
 
-# Data
+# Data indlæsning
 if 'df' not in st.session_state:
     if db_engine:
         try: st.session_state.df = pd.read_sql("SELECT * FROM merchants", db_engine)
@@ -151,10 +159,11 @@ if 'df' not in st.session_state:
 st.session_state.df = force_clean(st.session_state.df)
 opts = load_options()
 
-@st.dialog("📝 Klient Detaljer", width="large")
+@st.dialog("📝 Klient-kort", width="large")
 def client_popup(idx):
     row = st.session_state.df.loc[idx].to_dict()
     st.title(f"🏢 {row.get('Virksomhed')}")
+    st.divider()
     t1, t2 = st.tabs(["📊 Stamdata & Pipeline", "📓 Noter & Filer"])
     upd = {}
     with t1:
@@ -197,7 +206,7 @@ def client_popup(idx):
         for k,v in upd.items(): st.session_state.df.at[idx, k] = v
         if save_db(st.session_state.df): st.rerun()
 
-# Sidebar
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ CRM Kontrol")
     with st.expander("👤 Admin & Dropdowns"):
@@ -206,23 +215,27 @@ with st.sidebar:
         if st.button("Tilføj") and v_new: add_option(t_sel, v_new); st.rerun()
         st.divider()
         nu, np = st.text_input("Ny Bruger:"), st.text_input("Ny Kode:", type="password")
-        if st.button("Opret") and nu and np:
+        if st.button("Opret Bruger") and nu and np:
             with db_engine.connect() as conn: conn.execute(text("INSERT INTO users VALUES (:u,:p)"), {"u":nu,"p":np}); conn.commit()
-            st.success("Oprettet")
+            st.success("Bruger oprettet")
+    
     st.divider()
     st.download_button("📥 Master Export", st.session_state.df.to_csv(index=False), "master.csv", use_container_width=True)
     if 'sel_rows' in st.session_state and len(st.session_state.sel_rows) > 0:
         st.download_button("📥 Download VALGTE", st.session_state.df.iloc[st.session_state.sel_rows].to_csv(index=False), "udvalgte.csv", use_container_width=True, type="primary")
+
     st.divider()
     f_up = st.file_uploader("Flet ny fil")
     if f_up and st.button("Flet & Gem"):
         nd = pd.read_csv(f_up) if f_up.name.endswith('csv') else pd.read_excel(f_up)
         st.session_state.df = force_clean(pd.concat([st.session_state.df, nd], ignore_index=True))
         save_db(st.session_state.df); st.rerun()
+
     if st.button("🚪 Log ud"):
         st.session_state.authenticated = False
         st.rerun()
 
+# --- MAIN ---
 st.title("💼 CRM Master Workspace")
 search = st.text_input("🔍 Søg...")
 df_v = st.session_state.df.copy()
